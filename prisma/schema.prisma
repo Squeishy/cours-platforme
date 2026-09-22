@@ -1,0 +1,310 @@
+// Schéma de la plateforme de cours & SAE.
+// Base : MariaDB (provider "mysql"), connexion via @prisma/adapter-mariadb (voir src/lib/db.ts).
+// L'URL de connexion est lue dans prisma.config.ts (Prisma 7).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ─────────────────────────────────────────────────────────────
+// Utilisateurs & authentification (tables attendues par Better Auth)
+// ─────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?   @db.Text
+  role          Role      @default(STUDENT)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+
+  ownedCourses   Course[]         @relation("CourseOwner")
+  editedCourses  Course[]         @relation("CourseEditors")
+  ownedSaes      Sae[]            @relation("SaeOwner")
+  taughtSaes     Sae[]            @relation("SaeTeachers")
+  memberships    GroupMember[]
+  assessments    SelfAssessment[]
+  comments       Comment[]
+  depositLinks   DepositLink[]
+  pagesUpdated   Page[]           @relation("PageUpdatedBy")
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?  @db.Text
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?   @db.Text
+  refreshToken          String?   @db.Text
+  idToken               String?   @db.Text
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?   @db.Text
+  password              String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String   @db.Text
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Cours : un cours = une arborescence de pages éditables (BlockNote)
+// ─────────────────────────────────────────────────────────────
+
+model Course {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  title     String
+  summary   String?  @db.Text
+  published Boolean  @default(false)
+  ownerId   String
+  owner     User     @relation("CourseOwner", fields: [ownerId], references: [id])
+  editors   User[]   @relation("CourseEditors")
+  pages     Page[]
+  saes      Sae[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+model Page {
+  id          String   @id @default(cuid())
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  parentId    String?
+  parent      Page?    @relation("PageTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children    Page[]   @relation("PageTree")
+  title       String
+  position    Int      @default(0)
+  /// Contenu natif BlockNote (tableau de blocs JSON) — source de vérité
+  content     Json?
+  /// Export Markdown du contenu (portabilité, recherche, import BookStack)
+  markdown    String?  @db.LongText
+  updatedById String?
+  updatedBy   User?    @relation("PageUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([courseId, parentId, position])
+}
+
+// ─────────────────────────────────────────────────────────────
+// SAE (Situation d'Apprentissage et d'Évaluation — BUT)
+// Une SAE a des jalons (points d'étape / rendus), chaque jalon a une grille
+// de critères (idéalement rattachés à des apprentissages critiques, ex. AC11.01).
+// Les étudiants travaillent en groupes et s'auto-positionnent sur chaque jalon.
+// ─────────────────────────────────────────────────────────────
+
+model Sae {
+  id          String      @id @default(cuid())
+  /// Code référentiel, ex. "SAÉ 2.01"
+  code        String?
+  title       String
+  semester    Int?
+  /// Compétences visées, texte libre (ex. "C1 Réaliser, C2 Optimiser")
+  competences String?     @db.Text
+  /// Sujet de la SAE (blocs BlockNote)
+  content     Json?
+  markdown    String?     @db.LongText
+  startsAt    DateTime?
+  endsAt      DateTime?
+  published   Boolean     @default(false)
+  courseId    String?
+  course      Course?     @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  ownerId     String
+  owner       User        @relation("SaeOwner", fields: [ownerId], references: [id])
+  teachers    User[]      @relation("SaeTeachers")
+  milestones  Milestone[]
+  groups      Group[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([ownerId])
+  @@index([courseId])
+}
+
+model Milestone {
+  id                 String           @id @default(cuid())
+  saeId              String
+  sae                Sae              @relation(fields: [saeId], references: [id], onDelete: Cascade)
+  title              String
+  description        String?          @db.Text
+  dueAt              DateTime?
+  position           Int              @default(0)
+  /// Le groupe doit fournir au moins une URL de dépôt pour ce jalon
+  requiresDepositUrl Boolean          @default(false)
+  criteria           Criterion[]
+  assessments        SelfAssessment[]
+  depositLinks       DepositLink[]
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([saeId, position])
+}
+
+model Criterion {
+  id          String               @id @default(cuid())
+  milestoneId String
+  milestone   Milestone            @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+  label       String
+  description String?              @db.Text
+  /// Code d'apprentissage critique (ex. "AC11.01"), optionnel
+  acCode      String?
+  position    Int                  @default(0)
+  items       SelfAssessmentItem[]
+
+  @@index([milestoneId, position])
+}
+
+model Group {
+  id           String           @id @default(cuid())
+  saeId        String
+  sae          Sae              @relation(fields: [saeId], references: [id], onDelete: Cascade)
+  name         String
+  /// Espace de travail partagé du groupe (blocs BlockNote)
+  content      Json?
+  markdown     String?          @db.LongText
+  members      GroupMember[]
+  depositLinks DepositLink[]
+  assessments  SelfAssessment[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@unique([saeId, name])
+}
+
+model GroupMember {
+  groupId  String
+  group    Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@id([groupId, userId])
+  @@index([userId])
+}
+
+enum DepositProvider {
+  GITHUB
+  GITLAB
+  GOOGLE_DRIVE
+  ONEDRIVE
+  FIGMA
+  OTHER
+}
+
+/// Aucun fichier n'est stocké : uniquement des URL de dépôt externes.
+model DepositLink {
+  id          String          @id @default(cuid())
+  groupId     String
+  group       Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  milestoneId String?
+  milestone   Milestone?      @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  url         String          @db.VarChar(2048)
+  label       String?
+  provider    DepositProvider @default(OTHER)
+  addedById   String
+  addedBy     User            @relation(fields: [addedById], references: [id])
+  createdAt   DateTime        @default(now())
+
+  @@index([groupId])
+  @@index([milestoneId])
+}
+
+enum AssessmentStatus {
+  DRAFT
+  SUBMITTED
+}
+
+model SelfAssessment {
+  id          String               @id @default(cuid())
+  milestoneId String
+  milestone   Milestone            @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  groupId     String?
+  group       Group?               @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  status      AssessmentStatus     @default(DRAFT)
+  /// Réflexion globale de l'étudiant (ce qui a marché, difficultés, suite)
+  reflection  String?              @db.Text
+  submittedAt DateTime?
+  items       SelfAssessmentItem[]
+  comments    Comment[]
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@unique([milestoneId, userId])
+  @@index([groupId])
+}
+
+model SelfAssessmentItem {
+  id            String         @id @default(cuid())
+  assessmentId  String
+  assessment    SelfAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  criterionId   String
+  criterion     Criterion      @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+  /// Niveau d'auto-positionnement 1..4 (voir src/lib/assessment.ts)
+  level         Int
+  justification String?        @db.Text
+
+  @@unique([assessmentId, criterionId])
+}
+
+model Comment {
+  id           String         @id @default(cuid())
+  assessmentId String
+  assessment   SelfAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  authorId     String
+  author       User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body         String         @db.Text
+  createdAt    DateTime       @default(now())
+
+  @@index([assessmentId, createdAt])
+}
