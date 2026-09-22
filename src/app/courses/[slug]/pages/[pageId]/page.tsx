@@ -1,25 +1,26 @@
 import type { Metadata } from "next";
+import { visiblePageForMetadata } from "@/app/courses/_lib/metadata";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { assertAllowed, requireUser } from "@/lib/session";
 import { canEditCourse, canViewCourse } from "@/lib/permissions";
+import { formatDateTime, timeAgo } from "@/lib/format";
+import { isFavorite } from "@/lib/favorites";
 import { BlockEditor } from "@/components/editor";
-import { buildPageTree, pageAncestors } from "../../../_lib/tree";
+import { getPeertubeHosts } from "@/components/editor/peertube";
+import { FavoriteButton } from "@/components/favorite-button";
+import { buildPageTree, pageAncestors, readingOrder } from "../../../_lib/tree";
 import { PageTree } from "../../../_components/page-tree";
 import { TitleForm } from "../../../_components/title-form";
 import { ActionButton } from "../../../_components/action-button";
+import { Chevron } from "../../../_components/chevron";
+import { QuestionsSection } from "../../../_components/questions-section";
 import { createPage, deletePage, movePage, renamePage, savePageContent } from "../../../actions";
-
-const dateFormat = new Intl.DateTimeFormat("fr-FR", {
-  dateStyle: "long",
-  timeStyle: "short",
-  timeZone: "Europe/Paris",
-});
 
 export async function generateMetadata({ params }: PageProps<"/courses/[slug]/pages/[pageId]">): Promise<Metadata> {
   const { pageId } = await params;
-  const page = await db.page.findUnique({ where: { id: pageId }, select: { title: true } });
+  const page = await visiblePageForMetadata(pageId);
   return { title: page?.title ?? "Page" };
 }
 
@@ -44,6 +45,7 @@ export default async function CoursePageView({ params }: PageProps<"/courses/[sl
   if (!page || page.courseId !== course.id) notFound();
 
   const canEdit = canEditCourse(user, course);
+  const favorite = await isFavorite(user.id, "PAGE", page.id);
   const tree = buildPageTree(course.pages);
   const ancestors = pageAncestors(course.pages, page.id);
   const siblings = course.pages
@@ -51,6 +53,11 @@ export default async function CoursePageView({ params }: PageProps<"/courses/[sl
     .sort((a, b) => a.position - b.position || a.title.localeCompare(b.title, "fr"));
   const index = siblings.findIndex((p) => p.id === page.id);
   const childCount = course.pages.filter((p) => p.parentId === page.id).length;
+  const updatedAgo = timeAgo(page.updatedAt);
+  const order = readingOrder(tree);
+  const position = order.findIndex((p) => p.id === page.id);
+  const prev = position > 0 ? order[position - 1] : undefined;
+  const next = position >= 0 && position < order.length - 1 ? order[position + 1] : undefined;
 
   return (
     <div className="flex flex-col gap-6">
@@ -85,34 +92,84 @@ export default async function CoursePageView({ params }: PageProps<"/courses/[sl
         </ol>
       </nav>
 
+      {/* Mobile : sommaire repliable en haut */}
+      <details className="group card md:hidden">
+        <summary className="flex min-h-11 cursor-pointer items-center gap-2 font-semibold list-none [&::-webkit-details-marker]:hidden">
+          <Chevron />
+          Sommaire du cours
+        </summary>
+        <nav aria-label="Sommaire du cours" className="pt-2">
+          <PageTree nodes={tree} slug={course.slug} currentId={page.id} />
+        </nav>
+      </details>
+
       <div className="grid gap-6 md:grid-cols-[15rem_minmax(0,1fr)]">
-        <aside className="min-w-0">
+        <aside className="hidden min-w-0 md:block">
           <nav aria-label="Sommaire du cours" className="card md:sticky md:top-4">
             <h2 className="mb-2 text-sm font-semibold text-muted">Sommaire</h2>
             <PageTree nodes={tree} slug={course.slug} currentId={page.id} />
           </nav>
         </aside>
 
-        <article className="flex min-w-0 flex-col gap-4">
-          <header className="flex flex-col gap-1">
-            <h1 className="text-2xl font-semibold break-words">{page.title}</h1>
-            <p className="text-sm text-muted">
-              Modifié le {dateFormat.format(page.updatedAt)}
-              {page.updatedBy ? ` par ${page.updatedBy.name}` : ""}
-            </p>
-          </header>
+        <div className="flex min-w-0 max-w-[70ch] flex-col gap-8">
+          <article className="flex min-w-0 flex-col gap-4">
+            <header className="flex flex-col gap-2">
+              <h1 className="text-2xl font-semibold text-balance break-words">{page.title}</h1>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-muted">
+                  Modifié{" "}
+                  <time dateTime={page.updatedAt.toISOString()} title={formatDateTime(page.updatedAt)}>
+                    {updatedAgo}
+                  </time>
+                  {page.updatedBy ? ` par ${page.updatedBy.name}` : ""}
+                </p>
+                <div className="flex flex-wrap items-center gap-1">
+                  <FavoriteButton kind="PAGE" targetId={page.id} initial={favorite} label="cette page" />
+                  {canEdit && (
+                    <Link href={`/courses/${course.slug}/pages/${page.id}/history`} className="btn btn-ghost">
+                      Historique
+                    </Link>
+                  )}
+                </div>
+              </div>
+            </header>
 
-          <BlockEditor
-            key={page.id}
-            initialContent={page.content}
-            initialMarkdown={page.markdown}
-            editable={canEdit}
-            onSave={canEdit ? savePageContent.bind(null, page.id) : undefined}
-          />
+            <BlockEditor
+              key={page.id}
+              initialContent={page.content}
+              initialMarkdown={page.markdown}
+              editable={canEdit}
+              onSave={canEdit ? savePageContent.bind(null, page.id) : undefined}
+              peertubeHosts={getPeertubeHosts()}
+            />
 
-          {!canEdit && !page.content && !page.markdown && (
-            <p className="text-muted">Cette page est encore vide.</p>
-          )}
+            {!canEdit && !page.content && !page.markdown && <p className="text-muted">Cette page est encore vide.</p>}
+
+            {(prev || next) && (
+              <nav aria-label="Pages voisines" className="flex flex-col gap-2 sm:flex-row sm:justify-between">
+                {prev ? (
+                  <Link href={`/courses/${course.slug}/pages/${prev.id}`} className="btn justify-start">
+                    <span aria-hidden="true">←</span>
+                    <span className="min-w-0 truncate">
+                      <span className="sr-only">Page précédente : </span>
+                      {prev.title}
+                    </span>
+                  </Link>
+                ) : (
+                  <span />
+                )}
+                {next && (
+                  <Link href={`/courses/${course.slug}/pages/${next.id}`} className="btn justify-end">
+                    <span className="min-w-0 truncate">
+                      <span className="sr-only">Page suivante : </span>
+                      {next.title}
+                    </span>
+                    <span aria-hidden="true">→</span>
+                  </Link>
+                )}
+              </nav>
+            )}
+          </article>
 
           {canEdit && (
             <section aria-labelledby="page-actions" className="card flex flex-col gap-5">
@@ -149,6 +206,9 @@ export default async function CoursePageView({ params }: PageProps<"/courses/[sl
                     pendingLabel="Déplacement…"
                   />
                 )}
+                <Link href={`/courses/${course.slug}/pages/${page.id}/history`} className="btn">
+                  Historique des versions
+                </Link>
                 <ActionButton
                   action={deletePage.bind(null, page.id)}
                   label="Supprimer la page"
@@ -164,7 +224,9 @@ export default async function CoursePageView({ params }: PageProps<"/courses/[sl
               </div>
             </section>
           )}
-        </article>
+
+          <QuestionsSection user={user} course={course} pageId={page.id} />
+        </div>
       </div>
     </div>
   );

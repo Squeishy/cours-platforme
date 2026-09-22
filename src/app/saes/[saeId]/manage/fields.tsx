@@ -23,6 +23,7 @@ type MilestoneDefaults = {
   description: string | null;
   dueAt: Date | null;
   requiresDepositUrl: boolean;
+  peerReviewEnabled: boolean;
 };
 
 export function MilestoneFields({ idPrefix, defaults }: { idPrefix: string; defaults?: MilestoneDefaults }) {
@@ -38,7 +39,7 @@ export function MilestoneFields({ idPrefix, defaults }: { idPrefix: string; defa
           name="title"
           className="input"
           required
-          maxLength={200}
+          maxLength={190}
           placeholder="Revue de conception"
           defaultValue={defaults?.title ?? ""}
         />
@@ -68,59 +69,13 @@ export function MilestoneFields({ idPrefix, defaults }: { idPrefix: string; defa
           defaultValue={toInputDateTime(defaults?.dueAt)}
         />
       </div>
-      <div className="flex items-end">
+      <div className="flex flex-col justify-end">
         <Checkbox id={f("requiresDepositUrl")} name="requiresDepositUrl" defaultChecked={defaults?.requiresDepositUrl}>
           Dépôt d&apos;URL requis
         </Checkbox>
-      </div>
-    </div>
-  );
-}
-
-type CriterionDefaults = { label: string; description: string | null; acCode: string | null };
-
-export function CriterionFields({ idPrefix, defaults }: { idPrefix: string; defaults?: CriterionDefaults }) {
-  const f = (name: string) => `${idPrefix}-${name}`;
-  return (
-    <div className="grid gap-3 md:grid-cols-[10rem_minmax(0,1fr)]">
-      <div>
-        <label htmlFor={f("acCode")} className="label">
-          Code AC <span className="font-normal text-muted">(optionnel)</span>
-        </label>
-        <input
-          id={f("acCode")}
-          name="acCode"
-          className="input"
-          maxLength={30}
-          placeholder="AC11.01"
-          defaultValue={defaults?.acCode ?? ""}
-        />
-      </div>
-      <div>
-        <label htmlFor={f("label")} className="label">
-          Intitulé du critère
-        </label>
-        <input
-          id={f("label")}
-          name="label"
-          className="input"
-          required
-          maxLength={300}
-          defaultValue={defaults?.label ?? ""}
-        />
-      </div>
-      <div className="md:col-span-2">
-        <label htmlFor={f("description")} className="label">
-          Description <span className="font-normal text-muted">(optionnel)</span>
-        </label>
-        <textarea
-          id={f("description")}
-          name="description"
-          className="input py-2"
-          rows={2}
-          maxLength={3000}
-          defaultValue={defaults?.description ?? ""}
-        />
+        <Checkbox id={f("peerReviewEnabled")} name="peerReviewEnabled" defaultChecked={defaults?.peerReviewEnabled}>
+          Évaluation de la contribution entre membres du groupe
+        </Checkbox>
       </div>
     </div>
   );

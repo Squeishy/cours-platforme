@@ -1,21 +1,32 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
-import { canCreateCourse, canDeleteCourse, canEditCourse, isStaff } from "@/lib/permissions";
+import { canAnnounce, canCreateCourse, canDeleteCourse, canEditCourse, isStaff } from "@/lib/permissions";
 import { editorContentSchema, slugify } from "@/lib/content";
+import { snapshotPageBeforeWrite } from "@/lib/revisions";
+import { randomToken } from "@/lib/tokens";
 import type { ActionState } from "./_lib/action-state";
+import { pagesByDepth } from "./_lib/tree";
 import type { SaveResult } from "@/components/editor";
 
 // ── Schémas ──────────────────────────────────────────────────
 const idSchema = z.string().min(1).max(64);
 
+// Les colonnes String de Prisma sont des VARCHAR(191) sous MariaDB
+const TITLE_MAX = 190;
+
 const courseFieldsSchema = z.object({
-  title: z.string().trim().min(1, "Le titre est obligatoire.").max(200, "Titre trop long (200 caractères max)."),
+  title: z
+    .string()
+    .trim()
+    .min(1, "Le titre est obligatoire.")
+    .max(TITLE_MAX, `Titre trop long (${TITLE_MAX} caractères max).`),
   summary: z
     .string()
     .trim()
@@ -27,7 +38,17 @@ const pageTitleSchema = z
   .string()
   .trim()
   .min(1, "Le titre est obligatoire.")
-  .max(200, "Titre trop long (200 caractères max).");
+  .max(TITLE_MAX, `Titre trop long (${TITLE_MAX} caractères max).`);
+
+const announcementSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1, "Le titre de l'annonce est obligatoire.")
+    .max(TITLE_MAX, `Titre trop long (${TITLE_MAX} caractères max).`),
+  body: z.string().trim().min(1, "Le texte de l'annonce est obligatoire.").max(5000, "Annonce trop longue (5000 caractères max)."),
+  pinned: z.boolean(),
+});
 
 const emailSchema = z.email("Adresse e-mail invalide.").max(320);
 
@@ -236,6 +257,7 @@ export async function renamePage(pageId: string, _prev: ActionState, formData: F
   if (!page) return { ok: false, error: "Page introuvable." };
   if (!canEditCourse(user, page.course)) return { ok: false, error: "Vous ne pouvez pas modifier ce cours." };
 
+  await snapshotPageBeforeWrite(page.id, user.id);
   await db.page.update({ where: { id: page.id }, data: { title: title.data, updatedById: user.id } });
   revalidateCourse(page.course.slug);
   return { ok: true };
@@ -296,6 +318,7 @@ export async function savePageContent(pageId: string, content: unknown, markdown
   if (!page) return { ok: false, error: "Page introuvable." };
   if (!canEditCourse(user, page.course)) return { ok: false, error: "Vous ne pouvez pas modifier ce cours." };
 
+  await snapshotPageBeforeWrite(page.id, user.id);
   await db.page.update({
     where: { id: page.id },
     data: {
@@ -305,5 +328,161 @@ export async function savePageContent(pageId: string, content: unknown, markdown
     },
   });
   revalidatePath(`/courses/${page.course.slug}/pages/${page.id}`);
+  return { ok: true };
+}
+
+// ── Duplication ──────────────────────────────────────────────
+const MAX_PAGES_TO_COPY = 1000;
+const COPY_CHUNK = 25;
+
+/** Copie profonde de l'arbre de pages dans un nouveau cours non publié (sans questions, historique ni lien public) */
+export async function duplicateCourse(courseId: string): Promise<ActionState> {
+  const user = await requireUser();
+  if (!idSchema.safeParse(courseId).success) return { ok: false, error: "Cours invalide." };
+
+  const course = await loadCourse(courseId);
+  if (!course) return { ok: false, error: "Cours introuvable." };
+  if (!canEditCourse(user, course) || !canCreateCourse(user)) {
+    return { ok: false, error: "Vous ne pouvez pas dupliquer ce cours." };
+  }
+
+  const pages = await db.page.findMany({
+    where: { courseId: course.id },
+    select: { id: true, parentId: true, title: true, position: true, content: true, markdown: true },
+    take: MAX_PAGES_TO_COPY + 1,
+  });
+  if (pages.length > MAX_PAGES_TO_COPY) {
+    return { ok: false, error: `Cours trop volumineux pour être dupliqué (plus de ${MAX_PAGES_TO_COPY} pages).` };
+  }
+  const levels = pagesByDepth(pages);
+  const title = `${course.title} (copie)`.slice(0, TITLE_MAX);
+
+  let slug: string | null = null;
+  for (let attempt = 0; attempt < 3 && !slug; attempt++) {
+    const candidate = await uniqueSlug(`${course.title} copie`);
+    try {
+      await db.$transaction(
+        async (tx) => {
+          const copy = await tx.course.create({
+            data: { slug: candidate, title, summary: course.summary, ownerId: user.id, published: false },
+            select: { id: true },
+          });
+          // Parents toujours insérés avant leurs enfants (niveau par niveau)
+          const newIds = new Map<string, string>();
+          for (const level of levels) {
+            for (let i = 0; i < level.length; i += COPY_CHUNK) {
+              const data = level.slice(i, i + COPY_CHUNK).map((p) => {
+                const id = randomUUID();
+                newIds.set(p.id, id);
+                return {
+                  id,
+                  courseId: copy.id,
+                  parentId: p.parentId ? (newIds.get(p.parentId) ?? null) : null,
+                  title: p.title,
+                  position: p.position,
+                  content: p.content === null ? undefined : (p.content as Prisma.InputJsonValue),
+                  markdown: p.markdown,
+                  updatedById: user.id,
+                };
+              });
+              await tx.page.createMany({ data });
+            }
+          }
+        },
+        { maxWait: 10_000, timeout: 60_000 },
+      );
+      slug = candidate;
+    } catch (err) {
+      if (!isUniqueViolation(err)) return { ok: false, error: "Impossible de dupliquer le cours." };
+    }
+  }
+  if (!slug) return { ok: false, error: "Impossible de générer une adresse unique pour la copie." };
+
+  revalidatePath("/courses");
+  revalidatePath("/");
+  redirect(`/courses/${slug}`);
+}
+
+// ── Lien public en lecture seule ─────────────────────────────
+/** Crée (ou régénère, ce qui invalide l'ancien) le lien /p/course/<jeton> */
+export async function enableCourseShareLink(courseId: string): Promise<ActionState> {
+  const user = await requireUser();
+  if (!idSchema.safeParse(courseId).success) return { ok: false, error: "Cours invalide." };
+
+  const course = await loadCourse(courseId);
+  if (!course) return { ok: false, error: "Cours introuvable." };
+  if (!canEditCourse(user, course)) return { ok: false, error: "Vous ne pouvez pas modifier ce cours." };
+
+  await db.course.update({ where: { id: course.id }, data: { shareToken: randomToken() } });
+  if (course.shareToken) revalidatePath(`/p/course/${course.shareToken}`, "layout");
+  revalidateCourse(course.slug);
+  return { ok: true };
+}
+
+export async function revokeCourseShareLink(courseId: string): Promise<ActionState> {
+  const user = await requireUser();
+  if (!idSchema.safeParse(courseId).success) return { ok: false, error: "Cours invalide." };
+
+  const course = await loadCourse(courseId);
+  if (!course) return { ok: false, error: "Cours introuvable." };
+  if (!canEditCourse(user, course)) return { ok: false, error: "Vous ne pouvez pas modifier ce cours." };
+
+  await db.course.update({ where: { id: course.id }, data: { shareToken: null } });
+  if (course.shareToken) revalidatePath(`/p/course/${course.shareToken}`, "layout");
+  revalidateCourse(course.slug);
+  return { ok: true };
+}
+
+// ── Annonces du cours ────────────────────────────────────────
+/** Annonce de portée COURSE (aucune notification : un cours n'a pas de membres inscrits) */
+export async function createCourseAnnouncement(courseId: string, _prev: ActionState, formData: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  if (!idSchema.safeParse(courseId).success) return { ok: false, error: "Cours invalide." };
+
+  const values = {
+    title: str(formData, "title"),
+    body: str(formData, "body"),
+    pinned: formData.get("pinned") === "on" ? "on" : "",
+  };
+  const parsed = announcementSchema.safeParse({ title: values.title, body: values.body, pinned: values.pinned === "on" });
+  if (!parsed.success) return { ok: false, error: firstError(parsed.error), values };
+
+  const course = await loadCourse(courseId);
+  if (!course) return { ok: false, error: "Cours introuvable." };
+  if (!canAnnounce(user, { scope: "COURSE", course })) {
+    return { ok: false, error: "Vous ne pouvez pas publier d'annonce dans ce cours.", values };
+  }
+
+  await db.announcement.create({
+    data: {
+      scope: "COURSE",
+      courseId: course.id,
+      title: parsed.data.title,
+      body: parsed.data.body,
+      pinned: parsed.data.pinned,
+      authorId: user.id,
+    },
+  });
+  revalidateCourse(course.slug);
+  return { ok: true };
+}
+
+export async function deleteCourseAnnouncement(announcementId: string): Promise<ActionState> {
+  const user = await requireUser();
+  if (!idSchema.safeParse(announcementId).success) return { ok: false, error: "Annonce invalide." };
+
+  const announcement = await db.announcement.findUnique({
+    where: { id: announcementId },
+    include: { course: { include: { editors: { select: { id: true } } } } },
+  });
+  if (!announcement || announcement.scope !== "COURSE" || !announcement.course) {
+    return { ok: false, error: "Annonce introuvable." };
+  }
+  if (!canAnnounce(user, { scope: "COURSE", course: announcement.course })) {
+    return { ok: false, error: "Vous ne pouvez pas supprimer cette annonce." };
+  }
+
+  await db.announcement.delete({ where: { id: announcement.id } });
+  revalidateCourse(announcement.course.slug);
   return { ok: true };
 }

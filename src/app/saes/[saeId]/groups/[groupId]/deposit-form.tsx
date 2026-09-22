@@ -1,7 +1,7 @@
 "use client";
 
 import { startTransition, useActionState, useEffect, useRef, type FormEvent } from "react";
-import type { ActionResult } from "@/app/assessments/_lib/shared";
+import type { ActionResult } from "@/app/me/portfolio/_lib/shared";
 
 type Props = {
   action: (prev: ActionResult | null, formData: FormData) => Promise<ActionResult>;
@@ -28,7 +28,7 @@ export function DepositForm({ action, milestones }: Props) {
       <h3 className="text-base font-semibold">Ajouter une URL de dépôt</h3>
       <p id="deposit-help" className="text-sm text-muted">
         Aucun fichier n&apos;est hébergé ici : collez le lien vers votre dépôt (GitHub, GitLab, Google Drive, OneDrive,
-        Figma…). Vérifiez que l&apos;équipe pédagogique y a accès.
+        Figma…). Le lien est vérifié automatiquement : il doit être accessible sans connexion.
       </p>
 
       <div>
@@ -71,9 +71,9 @@ export function DepositForm({ action, milestones }: Props) {
 
       <div className="flex flex-col items-start gap-2">
         <button type="submit" className="btn btn-primary w-full sm:w-auto" disabled={pending}>
-          {pending ? "Ajout en cours…" : "Ajouter l'URL"}
+          {pending ? "Ajout et vérification du lien…" : "Ajouter l'URL"}
         </button>
-        <p role="status" aria-live="polite" className={state && !state.ok ? "form-error" : "text-sm text-ok"}>
+        <p role="status" aria-live="polite" className={state && !state.ok ? "form-error" : "text-sm"}>
           {state ? (state.ok ? (state.message ?? "Enregistré") : state.error) : ""}
         </p>
       </div>

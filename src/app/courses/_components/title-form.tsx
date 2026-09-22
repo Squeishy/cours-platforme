@@ -27,7 +27,7 @@ export function TitleForm({ action, label, submitLabel, defaultValue, placeholde
           id={id}
           name="title"
           required
-          maxLength={200}
+          maxLength={190}
           defaultValue={defaultValue}
           placeholder={placeholder}
           className="input"

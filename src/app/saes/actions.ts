@@ -6,56 +6,41 @@ import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { requireUser, type CurrentUser } from "@/lib/session";
-import { canCreateSae, canDeleteSae, canEditCourse, canManageSae } from "@/lib/permissions";
+import { canAnnounce, canCreateSae, canDeleteSae, canEditCourse, canManageSae } from "@/lib/permissions";
 import { editorContentSchema } from "@/lib/content";
+import { notify } from "@/lib/notify";
+import { MMI_CRITICAL_LEARNINGS, MMI_SAE_TEMPLATES } from "@/data/referentiel-mmi";
 import type { SaveResult } from "@/components/editor";
-import { parisLocalToDate } from "./_lib/dates";
+import { addParisDays } from "./_lib/dates";
 import type { FormState } from "./_lib/form-state";
+import { nextGroupNames, parseEmailList, splitIntoGroups } from "./_lib/group-tools";
+import {
+  FORBIDDEN,
+  GENERIC_ERROR,
+  NOT_FOUND_SAE,
+  checkbox,
+  email,
+  firstIssue,
+  id,
+  intInRange,
+  isUniqueViolation,
+  loadSae,
+  optionalDate,
+  optionalId,
+  optionalText,
+  read,
+  requiredText,
+  revalidateSae,
+  saeAccessSelect,
+  saeAudienceIds,
+  saeShortName,
+} from "./_lib/action-utils";
 
 // ─────────────────────────────────────────────────────────────
 // Helpers (non exportés : un fichier "use server" n'exporte que des actions)
 // ─────────────────────────────────────────────────────────────
 
-const FORBIDDEN = { ok: false, error: "Vous n'avez pas les droits pour cette action." } as const;
-const NOT_FOUND_SAE = { ok: false, error: "SAÉ introuvable." } as const;
-const GENERIC_ERROR = { ok: false, error: "Une erreur est survenue. Réessayez." } as const;
-
-/** Lit les champs demandés ; un champ absent devient undefined (pas null) pour zod */
-function read(formData: FormData, keys: readonly string[]): Record<string, FormDataEntryValue | undefined> {
-  return Object.fromEntries(keys.map((k) => [k, formData.get(k) ?? undefined]));
-}
-
-function firstIssue(error: z.ZodError): FormState {
-  return { ok: false, error: error.issues[0]?.message ?? "Données invalides." };
-}
-
-const id = z.string().trim().min(1, "Identifiant manquant").max(64);
-
-const requiredText = (label: string, max: number) =>
-  z
-    .string({ error: `${label} requis` })
-    .trim()
-    .min(1, `${label} requis`)
-    .max(max, `${label} : ${max} caractères maximum`);
-
-/** Texte optionnel : vide → null */
-const optionalText = (label: string, max: number) =>
-  z
-    .string()
-    .trim()
-    .max(max, `${label} : ${max} caractères maximum`)
-    .optional()
-    .transform((v) => (v ? v : null));
-
-/** `<input type="date|datetime-local">` en heure de Paris, vide → undefined */
-const optionalDate = z.preprocess((v) => {
-  if (typeof v !== "string") return undefined;
-  const s = v.trim();
-  if (s === "") return undefined;
-  return parisLocalToDate(s) ?? s;
-}, z.coerce.date({ error: "Date invalide" }).optional());
-
-const checkbox = z.preprocess((v) => v === "on" || v === "true", z.boolean());
+const direction = z.enum(["up", "down"], { error: "Direction invalide" });
 
 const semester = z.preprocess(
   (v) => (v === "" || v === undefined ? undefined : v),
@@ -67,46 +52,21 @@ const semester = z.preprocess(
     .optional(),
 );
 
-const email = z
-  .string({ error: "Adresse e-mail requise" })
-  .trim()
-  .toLowerCase()
-  .max(254, "Adresse e-mail trop longue")
-  .pipe(z.email("Adresse e-mail invalide"));
-
-const direction = z.enum(["up", "down"], { error: "Direction invalide" });
-
 const saeFieldsObject = z.object({
   code: optionalText("Code", 40),
-  title: requiredText("Titre", 200),
+  title: requiredText("Titre", 190),
   semester,
   competences: optionalText("Compétences", 2000),
   startsAt: optionalDate,
   endsAt: optionalDate,
-  courseId: z
-    .string()
-    .trim()
-    .max(64)
-    .optional()
-    .transform((v) => (v ? v : null)),
+  courseId: optionalId,
+  cohortId: optionalId,
 });
 
 const datesInOrder = (d: { startsAt?: Date; endsAt?: Date }) => !d.startsAt || !d.endsAt || d.endsAt >= d.startsAt;
 const DATES_ERROR = { message: "La date de fin doit être postérieure à la date de début", path: ["endsAt"] };
 
-const SAE_FIELD_KEYS = ["code", "title", "semester", "competences", "startsAt", "endsAt", "courseId"] as const;
-
-const saeAccessSelect = {
-  id: true,
-  ownerId: true,
-  published: true,
-  courseId: true,
-  teachers: { select: { id: true } },
-} satisfies Prisma.SaeSelect;
-
-function loadSae(saeId: string) {
-  return db.sae.findUnique({ where: { id: saeId }, select: saeAccessSelect });
-}
+const SAE_FIELD_KEYS = ["code", "title", "semester", "competences", "startsAt", "endsAt", "courseId", "cohortId"] as const;
 
 async function userCanLinkCourse(user: CurrentUser, courseId: string) {
   const course = await db.course.findUnique({
@@ -116,15 +76,8 @@ async function userCanLinkCourse(user: CurrentUser, courseId: string) {
   return !!course && canEditCourse(user, course);
 }
 
-function isUniqueViolation(e: unknown) {
-  return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
-}
-
-function revalidateSae(saeId: string) {
-  // Page SAÉ + toutes ses sous-routes (gestion, groupes, jalons)
-  revalidatePath(`/saes/${saeId}`, "layout");
-  revalidatePath("/saes");
-  revalidatePath("/");
+async function cohortExists(cohortId: string) {
+  return !!(await db.cohort.findUnique({ where: { id: cohortId }, select: { id: true } }));
 }
 
 /** Réordonne une liste (par index) en échangeant l'élément avec son voisin */
@@ -137,34 +90,75 @@ function swapped<T extends { id: string }>(items: T[], itemId: string, dir: "up"
   return next;
 }
 
+/** « a, b, c … et 4 autres » */
+function listPreview(items: string[], max = 15) {
+  if (items.length <= max) return items.join(", ");
+  return `${items.slice(0, max).join(", ")} … et ${items.length - max} autres`;
+}
+
+const plural = (n: number, singular: string, pluralForm = `${singular}s`) => `${n} ${n > 1 ? pluralForm : singular}`;
+
 // ─────────────────────────────────────────────────────────────
-// SAÉ : création, réglages, publication, sujet, suppression
+// SAÉ : création (éventuellement depuis un modèle national), réglages, publication, sujet, suppression
 // ─────────────────────────────────────────────────────────────
+
+const OFFICIAL_AC_LABELS = new Map(MMI_CRITICAL_LEARNINGS.map((l) => [l.code, l.label]));
+
+/** Critères « un par AC du modèle », rattachés au référentiel en base quand l'AC y existe */
+async function templateCriteria(acs: readonly string[]) {
+  if (acs.length === 0) return [];
+  const learnings = await db.criticalLearning.findMany({
+    where: { code: { in: [...acs] } },
+    select: { id: true, code: true, label: true },
+  });
+  return acs.map((code, position) => {
+    const learning = learnings.find((l) => l.code === code);
+    return {
+      label: (learning?.label ?? OFFICIAL_AC_LABELS.get(code) ?? code).slice(0, 190),
+      acCode: code,
+      learningId: learning?.id ?? null,
+      position,
+    };
+  });
+}
 
 export async function createSae(_prev: FormState, formData: FormData): Promise<FormState> {
   const user = await requireUser();
   if (!canCreateSae(user)) return FORBIDDEN;
 
-  const parsed = saeFieldsObject.refine(datesInOrder, DATES_ERROR).safeParse(read(formData, SAE_FIELD_KEYS));
+  const parsed = saeFieldsObject
+    .extend({ templateCode: optionalText("Modèle", 40) })
+    .refine(datesInOrder, DATES_ERROR)
+    .safeParse(read(formData, [...SAE_FIELD_KEYS, "templateCode"]));
   if (!parsed.success) return firstIssue(parsed.error);
   const data = parsed.data;
+
+  const template = data.templateCode ? MMI_SAE_TEMPLATES.find((t) => t.code === data.templateCode) : undefined;
+  if (data.templateCode && !template) return { ok: false, error: "Modèle de SAÉ inconnu." };
 
   if (data.courseId && !(await userCanLinkCourse(user, data.courseId))) {
     return { ok: false, error: "Vous ne pouvez pas lier ce cours." };
   }
+  if (data.cohortId && !(await cohortExists(data.cohortId))) return { ok: false, error: "Promo introuvable." };
 
   let saeId: string;
   try {
+    const criteria = template ? await templateCriteria(template.acs) : [];
     const sae = await db.sae.create({
       data: {
-        code: data.code,
+        code: data.code ?? template?.code ?? null,
         title: data.title,
-        semester: data.semester ?? null,
+        semester: data.semester ?? template?.semester ?? null,
         competences: data.competences,
         startsAt: data.startsAt ?? null,
         endsAt: data.endsAt ?? null,
         courseId: data.courseId,
+        cohortId: data.cohortId,
         ownerId: user.id,
+        // Modèle national : un jalon « Rendu final » (sans date) avec un critère par AC du programme
+        milestones: template
+          ? { create: [{ title: "Rendu final", position: 0, criteria: { create: criteria } }] }
+          : undefined,
       },
       select: { id: true },
     });
@@ -196,6 +190,9 @@ export async function updateSaeSettings(_prev: FormState, formData: FormData): P
   if (data.courseId && data.courseId !== sae.courseId && !(await userCanLinkCourse(user, data.courseId))) {
     return { ok: false, error: "Vous ne pouvez pas lier ce cours." };
   }
+  if (data.cohortId && data.cohortId !== sae.cohortId && !(await cohortExists(data.cohortId))) {
+    return { ok: false, error: "Promo introuvable." };
+  }
 
   try {
     await db.sae.update({
@@ -208,6 +205,7 @@ export async function updateSaeSettings(_prev: FormState, formData: FormData): P
         startsAt: data.startsAt ?? null,
         endsAt: data.endsAt ?? null,
         courseId: data.courseId,
+        cohortId: data.cohortId,
         published: data.published,
       },
     });
@@ -292,6 +290,104 @@ export async function deleteSae(_prev: FormState, formData: FormData): Promise<F
   redirect("/saes");
 }
 
+/**
+ * Reconduction : copie la SAÉ (sujet, cours lié, équipe, jalons + critères) en brouillon,
+ * avec les dates décalées de N semaines. Ni groupes, ni auto-évaluations, ni annonces, ni créneaux.
+ */
+export async function duplicateSae(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+
+  const parsed = z
+    .object({ saeId: id, weeks: intInRange("Décalage", -260, 260) })
+    .safeParse(read(formData, ["saeId", "weeks"]));
+  if (!parsed.success) return firstIssue(parsed.error);
+
+  const source = await db.sae.findUnique({
+    where: { id: parsed.data.saeId },
+    select: {
+      ...saeAccessSelect,
+      semester: true,
+      competences: true,
+      content: true,
+      markdown: true,
+      startsAt: true,
+      endsAt: true,
+      milestones: {
+        orderBy: [{ position: "asc" }, { createdAt: "asc" }],
+        take: 200,
+        select: {
+          title: true,
+          description: true,
+          dueAt: true,
+          requiresDepositUrl: true,
+          peerReviewEnabled: true,
+          criteria: {
+            orderBy: [{ position: "asc" }, { id: "asc" }],
+            take: 200,
+            select: { label: true, description: true, acCode: true, learningId: true },
+          },
+        },
+      },
+    },
+  });
+  if (!source) return NOT_FOUND_SAE;
+  if (!canCreateSae(user) || !canManageSae(user, source)) return FORBIDDEN;
+
+  const days = parsed.data.weeks * 7;
+  const shift = (d: Date | null) => (d ? addParisDays(d, days) : null);
+  const suffix = " (copie)";
+  // L'équipe d'origine (responsable compris) suit la copie ; la personne qui duplique en devient responsable
+  const teacherIds = [...new Set([source.ownerId, ...source.teachers.map((t) => t.id)])].filter((t) => t !== user.id);
+
+  let newId: string;
+  try {
+    const copy = await db.sae.create({
+      data: {
+        code: source.code,
+        title: `${source.title.slice(0, 190 - suffix.length)}${suffix}`,
+        semester: source.semester,
+        competences: source.competences,
+        content: source.content === null ? Prisma.DbNull : (source.content as Prisma.InputJsonValue),
+        markdown: source.markdown,
+        startsAt: shift(source.startsAt),
+        endsAt: shift(source.endsAt),
+        published: false,
+        courseId: source.courseId,
+        ownerId: user.id,
+        sourceSaeId: source.id,
+        teachers: teacherIds.length > 0 ? { connect: teacherIds.map((t) => ({ id: t })) } : undefined,
+        milestones: {
+          create: source.milestones.map((m, position) => ({
+            title: m.title,
+            description: m.description,
+            dueAt: shift(m.dueAt),
+            requiresDepositUrl: m.requiresDepositUrl,
+            peerReviewEnabled: m.peerReviewEnabled,
+            position,
+            criteria: {
+              create: m.criteria.map((c, cPosition) => ({
+                label: c.label,
+                description: c.description,
+                acCode: c.acCode,
+                learningId: c.learningId,
+                position: cPosition,
+              })),
+            },
+          })),
+        },
+      },
+      select: { id: true },
+    });
+    newId = copy.id;
+  } catch {
+    return GENERIC_ERROR;
+  }
+
+  revalidatePath("/saes");
+  revalidatePath("/");
+  redirect(`/saes/${newId}/manage`);
+}
+
 // ─────────────────────────────────────────────────────────────
 // Équipe pédagogique
 // ─────────────────────────────────────────────────────────────
@@ -356,17 +452,92 @@ export async function removeSaeTeacher(_prev: FormState, formData: FormData): Pr
 }
 
 // ─────────────────────────────────────────────────────────────
+// Annonces de la SAÉ
+// ─────────────────────────────────────────────────────────────
+
+export async function createSaeAnnouncement(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+
+  const parsed = z
+    .object({
+      saeId: id,
+      title: requiredText("Titre", 190),
+      body: requiredText("Message", 10_000).transform((v) => v.replace(/\r\n?/g, "\n")),
+      pinned: checkbox,
+    })
+    .safeParse(read(formData, ["saeId", "title", "body", "pinned"]));
+  if (!parsed.success) return firstIssue(parsed.error);
+  const data = parsed.data;
+
+  const sae = await loadSae(data.saeId);
+  if (!sae) return NOT_FOUND_SAE;
+  if (!canAnnounce(user, { scope: "SAE", sae })) return FORBIDDEN;
+
+  try {
+    await db.announcement.create({
+      data: { scope: "SAE", saeId: sae.id, title: data.title, body: data.body, pinned: data.pinned, authorId: user.id },
+    });
+  } catch {
+    return GENERIC_ERROR;
+  }
+
+  // Les étudiants ne voient pas une SAÉ en brouillon : inutile de leur envoyer un lien inaccessible
+  let message = "Annonce publiée. La SAÉ est en brouillon : les étudiants ne sont pas notifiés.";
+  if (sae.published) {
+    const audience = (await saeAudienceIds(sae)).filter((uid) => uid !== user.id);
+    await notify(
+      audience,
+      { type: "announcement", title: `${saeShortName(sae)} · ${data.title}`, body: data.body.slice(0, 300), link: `/saes/${sae.id}` },
+      user.id,
+    );
+    message =
+      audience.length > 0
+        ? `Annonce publiée, ${plural(audience.length, "personne")} ${audience.length > 1 ? "notifiées" : "notifiée"}.`
+        : "Annonce publiée (aucun étudiant à notifier pour l'instant).";
+  }
+
+  revalidateSae(sae.id);
+  return { ok: true, message };
+}
+
+export async function deleteSaeAnnouncement(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+
+  const parsed = z.object({ announcementId: id }).safeParse(read(formData, ["announcementId"]));
+  if (!parsed.success) return firstIssue(parsed.error);
+
+  const announcement = await db.announcement.findUnique({
+    where: { id: parsed.data.announcementId },
+    select: { id: true, scope: true, sae: { select: saeAccessSelect } },
+  });
+  if (!announcement || announcement.scope !== "SAE" || !announcement.sae) {
+    return { ok: false, error: "Annonce introuvable." };
+  }
+  if (!canAnnounce(user, { scope: "SAE", sae: announcement.sae })) return FORBIDDEN;
+
+  try {
+    await db.announcement.delete({ where: { id: announcement.id } });
+  } catch {
+    return GENERIC_ERROR;
+  }
+
+  revalidateSae(announcement.sae.id);
+  return { ok: true, message: "Annonce supprimée." };
+}
+
+// ─────────────────────────────────────────────────────────────
 // Jalons
 // ─────────────────────────────────────────────────────────────
 
 const milestoneFieldsSchema = z.object({
-  title: requiredText("Titre", 200),
+  title: requiredText("Titre", 190),
   description: optionalText("Description", 5000),
   dueAt: optionalDate,
   requiresDepositUrl: checkbox,
+  peerReviewEnabled: checkbox,
 });
 
-const MILESTONE_FIELD_KEYS = ["title", "description", "dueAt", "requiresDepositUrl"] as const;
+const MILESTONE_FIELD_KEYS = ["title", "description", "dueAt", "requiresDepositUrl", "peerReviewEnabled"] as const;
 
 function loadMilestone(milestoneId: string) {
   return db.milestone.findUnique({
@@ -397,6 +568,7 @@ export async function createMilestone(_prev: FormState, formData: FormData): Pro
         description: data.description,
         dueAt: data.dueAt ?? null,
         requiresDepositUrl: data.requiresDepositUrl,
+        peerReviewEnabled: data.peerReviewEnabled,
         position: (last._max.position ?? -1) + 1,
       },
     });
@@ -429,6 +601,7 @@ export async function updateMilestone(_prev: FormState, formData: FormData): Pro
         description: data.description,
         dueAt: data.dueAt ?? null,
         requiresDepositUrl: data.requiresDepositUrl,
+        peerReviewEnabled: data.peerReviewEnabled,
       },
     });
   } catch {
@@ -477,6 +650,7 @@ export async function moveMilestone(_prev: FormState, formData: FormData): Promi
       where: { saeId: milestone.saeId },
       orderBy: [{ position: "asc" }, { createdAt: "asc" }],
       select: { id: true },
+      take: 500,
     });
     const next = swapped(siblings, milestone.id, parsed.data.direction);
     if (next) {
@@ -497,7 +671,8 @@ export async function moveMilestone(_prev: FormState, formData: FormData): Promi
 // ─────────────────────────────────────────────────────────────
 
 const criterionFieldsSchema = z.object({
-  label: requiredText("Intitulé", 300),
+  // Facultatif quand un AC est choisi : son libellé officiel sert alors d'intitulé
+  label: optionalText("Intitulé", 190),
   description: optionalText("Description", 3000),
   acCode: z
     .string()
@@ -505,9 +680,36 @@ const criterionFieldsSchema = z.object({
     .max(30, "Code AC : 30 caractères maximum")
     .optional()
     .transform((v) => (v ? v.toUpperCase() : null)),
+  learningId: optionalId,
 });
 
-const CRITERION_FIELD_KEYS = ["label", "description", "acCode"] as const;
+const CRITERION_FIELD_KEYS = ["label", "description", "acCode", "learningId"] as const;
+
+type CriterionInput = z.infer<typeof criterionFieldsSchema>;
+
+/**
+ * Rattachement au référentiel : l'AC choisi fixe `learningId` et `acCode` (toujours synchronisés).
+ * Sans AC choisi, un code libre qui correspond à un AC du référentiel est rattaché automatiquement.
+ */
+async function resolveCriterion(
+  data: CriterionInput,
+): Promise<
+  { ok: true; label: string; acCode: string | null; learningId: string | null } | { ok: false; error: string }
+> {
+  if (data.learningId) {
+    const learning = await db.criticalLearning.findUnique({
+      where: { id: data.learningId },
+      select: { id: true, code: true, label: true },
+    });
+    if (!learning) return { ok: false, error: "Apprentissage critique introuvable." };
+    return { ok: true, label: data.label ?? learning.label.slice(0, 190), acCode: learning.code, learningId: learning.id };
+  }
+  if (!data.label) return { ok: false, error: "Intitulé requis (ou choisissez un apprentissage critique)." };
+  const linked = data.acCode
+    ? await db.criticalLearning.findUnique({ where: { code: data.acCode }, select: { id: true } })
+    : null;
+  return { ok: true, label: data.label, acCode: data.acCode, learningId: linked?.id ?? null };
+}
 
 function loadCriterion(criterionId: string) {
   return db.criterion.findUnique({
@@ -533,6 +735,9 @@ export async function createCriterion(_prev: FormState, formData: FormData): Pro
   if (!milestone) return { ok: false, error: "Jalon introuvable." };
   if (!canManageSae(user, milestone.sae)) return FORBIDDEN;
 
+  const resolved = await resolveCriterion(data);
+  if (!resolved.ok) return resolved;
+
   try {
     const last = await db.criterion.aggregate({
       where: { milestoneId: milestone.id },
@@ -541,9 +746,10 @@ export async function createCriterion(_prev: FormState, formData: FormData): Pro
     await db.criterion.create({
       data: {
         milestoneId: milestone.id,
-        label: data.label,
+        label: resolved.label,
         description: data.description,
-        acCode: data.acCode,
+        acCode: resolved.acCode,
+        learningId: resolved.learningId,
         position: (last._max.position ?? -1) + 1,
       },
     });
@@ -568,10 +774,18 @@ export async function updateCriterion(_prev: FormState, formData: FormData): Pro
   if (!criterion) return { ok: false, error: "Critère introuvable." };
   if (!canManageSae(user, criterion.milestone.sae)) return FORBIDDEN;
 
+  const resolved = await resolveCriterion(data);
+  if (!resolved.ok) return resolved;
+
   try {
     await db.criterion.update({
       where: { id: criterion.id },
-      data: { label: data.label, description: data.description, acCode: data.acCode },
+      data: {
+        label: resolved.label,
+        description: data.description,
+        acCode: resolved.acCode,
+        learningId: resolved.learningId,
+      },
     });
   } catch {
     return GENERIC_ERROR;
@@ -619,6 +833,7 @@ export async function moveCriterion(_prev: FormState, formData: FormData): Promi
       where: { milestoneId: criterion.milestoneId },
       orderBy: [{ position: "asc" }, { id: "asc" }],
       select: { id: true },
+      take: 500,
     });
     const next = swapped(siblings, criterion.id, parsed.data.direction);
     if (next) {
@@ -644,7 +859,7 @@ const DUPLICATE_GROUP = { ok: false, error: "Un groupe porte déjà ce nom dans 
 function loadGroup(groupId: string) {
   return db.group.findUnique({
     where: { id: groupId },
-    select: { id: true, saeId: true, sae: { select: saeAccessSelect } },
+    select: { id: true, saeId: true, name: true, sae: { select: saeAccessSelect } },
   });
 }
 
@@ -734,7 +949,7 @@ export async function addGroupMember(_prev: FormState, formData: FormData): Prom
         select: { groupId: true, group: { select: { name: true } } },
       });
       if (existing) return existing.groupId === group.id ? "same" : `other:${existing.group.name}`;
-      await tx.groupMember.create({ data: { groupId: group.id, userId: student.id } });
+      await tx.groupMember.create({ data: { groupId: group.id, saeId: group.saeId, userId: student.id } });
       return "added";
     });
     if (outcome === "same") return { ok: false, error: `${student.name} est déjà dans ce groupe.` };
@@ -745,7 +960,7 @@ export async function addGroupMember(_prev: FormState, formData: FormData): Prom
       };
     }
   } catch (e) {
-    if (isUniqueViolation(e)) return { ok: false, error: `${student.name} est déjà dans ce groupe.` };
+    if (isUniqueViolation(e)) return { ok: false, error: `${student.name} est déjà dans un groupe de cette SAÉ.` };
     return GENERIC_ERROR;
   }
 
@@ -774,4 +989,143 @@ export async function removeGroupMember(_prev: FormState, formData: FormData): P
 
   revalidateSae(group.saeId);
   return { ok: true, message: "Membre retiré." };
+}
+
+const MAX_BULK_EMAILS = 300;
+
+/**
+ * Ajout en lot : liste d'adresses collée (une par ligne ou séparées par des virgules).
+ * Rapporte les adresses inconnues, les comptes non étudiants et les étudiants déjà placés dans un groupe de la SAÉ.
+ */
+export async function addGroupMembersBulk(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+
+  const parsed = z
+    .object({ groupId: id, emails: requiredText("Liste d'adresses", 30_000) })
+    .safeParse(read(formData, ["groupId", "emails"]));
+  if (!parsed.success) return firstIssue(parsed.error);
+
+  const group = await loadGroup(parsed.data.groupId);
+  if (!group) return { ok: false, error: "Groupe introuvable." };
+  if (!canManageSae(user, group.sae)) return FORBIDDEN;
+
+  const { emails, invalid } = parseEmailList(parsed.data.emails);
+  if (emails.length === 0) return { ok: false, error: "Aucune adresse e-mail reconnue dans la liste." };
+  if (emails.length > MAX_BULK_EMAILS) {
+    return { ok: false, error: `${MAX_BULK_EMAILS} adresses maximum par envoi (${emails.length} reçues).` };
+  }
+
+  const users = await db.user.findMany({
+    where: { email: { in: emails } },
+    select: { id: true, name: true, email: true, role: true },
+    take: MAX_BULK_EMAILS,
+  });
+  const known = new Set(users.map((u) => u.email.toLowerCase()));
+  const unknown = emails.filter((e) => !known.has(e));
+  const notStudents = users.filter((u) => u.role !== "STUDENT");
+  const students = users.filter((u) => u.role === "STUDENT");
+
+  let added: string[] = [];
+  let alreadyHere: string[] = [];
+  let elsewhere: string[] = [];
+  try {
+    const outcome = await db.$transaction(async (tx) => {
+      const existing = await tx.groupMember.findMany({
+        where: { userId: { in: students.map((s) => s.id) }, group: { saeId: group.saeId } },
+        select: { userId: true, groupId: true, group: { select: { name: true } } },
+      });
+      const placed = new Map(existing.map((m) => [m.userId, m]));
+      const toAdd = students.filter((s) => !placed.has(s.id));
+      if (toAdd.length > 0) {
+        await tx.groupMember.createMany({
+          data: toAdd.map((s) => ({ groupId: group.id, saeId: group.saeId, userId: s.id })),
+          skipDuplicates: true,
+        });
+      }
+      return { toAdd, placed };
+    });
+    added = outcome.toAdd.map((s) => s.name);
+    for (const s of students) {
+      const m = outcome.placed.get(s.id);
+      if (!m) continue;
+      if (m.groupId === group.id) alreadyHere.push(s.name);
+      else elsewhere.push(`${s.name} (${m.group.name})`);
+    }
+  } catch {
+    return GENERIC_ERROR;
+  }
+  alreadyHere = alreadyHere.sort((a, b) => a.localeCompare(b, "fr"));
+  elsewhere = elsewhere.sort((a, b) => a.localeCompare(b, "fr"));
+
+  const lines = [
+    added.length > 0 ? `${plural(added.length, "étudiant·e ajouté·e", "étudiant·es ajouté·es")} à « ${group.name} ».` : "",
+    alreadyHere.length > 0 ? `Déjà dans ce groupe : ${listPreview(alreadyHere)}.` : "",
+    elsewhere.length > 0 ? `Déjà dans un autre groupe de la SAÉ (non ajouté·es) : ${listPreview(elsewhere)}.` : "",
+    unknown.length > 0 ? `Adresses sans compte : ${listPreview(unknown)}.` : "",
+    notStudents.length > 0 ? `Comptes non étudiants ignorés : ${listPreview(notStudents.map((u) => u.name))}.` : "",
+    invalid.length > 0 ? `Entrées non reconnues : ${listPreview(invalid)}.` : "",
+  ].filter(Boolean);
+
+  if (added.length === 0) return { ok: false, error: ["Aucun étudiant ajouté.", ...lines].join("\n") };
+  revalidateSae(group.saeId);
+  return { ok: true, message: lines.join("\n") };
+}
+
+/**
+ * Groupes aléatoires à partir des étudiants de la promo liée qui n'ont pas encore de groupe dans cette SAÉ.
+ * Tailles équilibrées (au plus N), noms « Groupe n » libres, le tout dans une transaction.
+ */
+export async function autoCreateGroups(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+
+  const parsed = z
+    .object({ saeId: id, size: intInRange("Taille des groupes", 2, 12) })
+    .safeParse(read(formData, ["saeId", "size"]));
+  if (!parsed.success) return firstIssue(parsed.error);
+
+  const sae = await loadSae(parsed.data.saeId);
+  if (!sae) return NOT_FOUND_SAE;
+  if (!canManageSae(user, sae)) return FORBIDDEN;
+  const cohortId = sae.cohortId;
+  if (!cohortId) return { ok: false, error: "Liez d'abord une promo à la SAÉ (section Réglages)." };
+
+  let result: { groups: number; students: number };
+  try {
+    result = await db.$transaction(async (tx) => {
+      const candidates = await tx.cohortMember.findMany({
+        where: { cohortId, user: { role: "STUDENT", memberships: { none: { group: { saeId: sae.id } } } } },
+        select: { userId: true },
+        take: 1000,
+      });
+      if (candidates.length === 0) return { groups: 0, students: 0 };
+      const existing = await tx.group.findMany({ where: { saeId: sae.id }, select: { name: true }, take: 1000 });
+      const split = splitIntoGroups(
+        candidates.map((c) => c.userId),
+        parsed.data.size,
+      );
+      const names = nextGroupNames(
+        existing.map((g) => g.name),
+        split.length,
+      );
+      for (const [i, members] of split.entries()) {
+        await tx.group.create({
+          data: { saeId: sae.id, name: names[i], members: { create: members.map((userId) => ({ userId, saeId: sae.id })) } },
+        });
+      }
+      return { groups: split.length, students: candidates.length };
+    }, { timeout: 20_000 });
+  } catch (e) {
+    return isUniqueViolation(e)
+      ? { ok: false, error: "Un groupe a été modifié en même temps. Réessayez." }
+      : GENERIC_ERROR;
+  }
+
+  if (result.groups === 0) {
+    return { ok: false, error: "Tous les étudiants de la promo ont déjà un groupe dans cette SAÉ." };
+  }
+  revalidateSae(sae.id);
+  return {
+    ok: true,
+    message: `${plural(result.groups, "groupe créé", "groupes créés")} pour ${plural(result.students, "étudiant·e", "étudiant·es")}.`,
+  };
 }

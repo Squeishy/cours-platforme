@@ -3,7 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { assertAllowed, requireUser } from "@/lib/session";
 import { canEditAssessment, canViewSae } from "@/lib/permissions";
-import { formatDateTime } from "@/app/assessments/_lib/shared";
+import { criterionSelect, formatDateTime, toCriterionView } from "@/app/assessments/_lib/shared";
 import { BackLink, StatusBadge } from "@/app/assessments/_lib/ui";
 import { saveAssessment } from "./actions";
 import { AssessForm } from "./assess-form";
@@ -27,10 +27,7 @@ export default async function AssessPage({ params }: PageProps<"/saes/[saeId]/mi
           teachers: { select: { id: true } },
         },
       },
-      criteria: {
-        orderBy: { position: "asc" },
-        select: { id: true, label: true, description: true, acCode: true },
-      },
+      criteria: { orderBy: { position: "asc" }, select: criterionSelect },
     },
   });
   if (!milestone || milestone.saeId !== saeId) notFound();
@@ -83,7 +80,7 @@ export default async function AssessPage({ params }: PageProps<"/saes/[saeId]/mi
 
       <AssessForm
         action={saveAssessment.bind(null, milestone.id)}
-        criteria={milestone.criteria}
+        criteria={milestone.criteria.map(toCriterionView)}
         existingItems={existingItems}
         reflection={assessment?.reflection ?? ""}
       />

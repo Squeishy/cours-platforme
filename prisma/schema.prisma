@@ -33,15 +33,32 @@ model User {
   sessions      Session[]
   accounts      Account[]
 
-  ownedCourses   Course[]         @relation("CourseOwner")
-  editedCourses  Course[]         @relation("CourseEditors")
-  ownedSaes      Sae[]            @relation("SaeOwner")
-  taughtSaes     Sae[]            @relation("SaeTeachers")
-  memberships    GroupMember[]
-  assessments    SelfAssessment[]
-  comments       Comment[]
-  depositLinks   DepositLink[]
-  pagesUpdated   Page[]           @relation("PageUpdatedBy")
+  ownedCourses  Course[]         @relation("CourseOwner")
+  editedCourses Course[]         @relation("CourseEditors")
+  ownedSaes     Sae[]            @relation("SaeOwner")
+  taughtSaes    Sae[]            @relation("SaeTeachers")
+  memberships   GroupMember[]
+  assessments   SelfAssessment[]
+  comments      Comment[]
+  depositLinks  DepositLink[]
+  pagesUpdated  Page[]           @relation("PageUpdatedBy")
+
+  /// Jeton secret du flux calendrier ICS personnel (/api/calendar/<token>)
+  calendarToken    String?             @unique
+  /// Jeton du portfolio public en lecture seule (/p/portfolio/<token>), null = privé
+  portfolioToken   String?             @unique
+  feedbackGiven    SelfAssessment[]    @relation("FeedbackBy")
+  commentSnippets  CommentSnippet[]
+  peerReviewsGiven PeerReview[]        @relation("PeerReviewer")
+  peerReviewsGot   PeerReview[]        @relation("PeerReviewee")
+  announcements    Announcement[]
+  notifications    Notification[]
+  favorites        Favorite[]
+  pageRevisions    PageRevision[]
+  questions        PageQuestion[]
+  answers          PageAnswer[]
+  evidences        PortfolioEvidence[]
+  cohorts          CohortMember[]
 
   @@map("user")
 }
@@ -98,41 +115,94 @@ model Verification {
 // ─────────────────────────────────────────────────────────────
 
 model Course {
-  id        String   @id @default(cuid())
-  slug      String   @unique
-  title     String
-  summary   String?  @db.Text
-  published Boolean  @default(false)
-  ownerId   String
-  owner     User     @relation("CourseOwner", fields: [ownerId], references: [id])
-  editors   User[]   @relation("CourseEditors")
-  pages     Page[]
-  saes      Sae[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String         @id @default(cuid())
+  slug          String         @unique
+  title         String
+  summary       String?        @db.Text
+  published     Boolean        @default(false)
+  ownerId       String
+  owner         User           @relation("CourseOwner", fields: [ownerId], references: [id])
+  editors       User[]         @relation("CourseEditors")
+  pages         Page[]
+  saes          Sae[]
+  /// Lien public en lecture seule (/p/course/<token>), null = désactivé
+  shareToken    String?        @unique
+  announcements Announcement[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
   @@index([ownerId])
+  @@fulltext([title, summary])
 }
 
 model Page {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   courseId    String
-  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  course      Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
   parentId    String?
-  parent      Page?    @relation("PageTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children    Page[]   @relation("PageTree")
+  parent      Page?          @relation("PageTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children    Page[]         @relation("PageTree")
   title       String
-  position    Int      @default(0)
+  position    Int            @default(0)
   /// Contenu natif BlockNote (tableau de blocs JSON) — source de vérité
   content     Json?
   /// Export Markdown du contenu (portabilité, recherche, import BookStack)
-  markdown    String?  @db.LongText
+  markdown    String?        @db.LongText
   updatedById String?
-  updatedBy   User?    @relation("PageUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedBy   User?          @relation("PageUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  revisions   PageRevision[]
+  questions   PageQuestion[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
 
   @@index([courseId, parentId, position])
+  @@fulltext([title, markdown])
+}
+
+/// Historique des versions d'une page (instantané au plus toutes les 10 min par auteur)
+model PageRevision {
+  id        String   @id @default(cuid())
+  pageId    String
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  title     String
+  content   Json?
+  markdown  String?  @db.LongText
+  authorId  String?
+  author    User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+
+  @@index([pageId, createdAt])
+}
+
+/// Questions des étudiants sur une page de cours (option anonyme vis-à-vis des autres étudiants)
+model PageQuestion {
+  id        String       @id @default(cuid())
+  pageId    String
+  page      Page         @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body      String       @db.Text
+  anonymous Boolean      @default(false)
+  resolved  Boolean      @default(false)
+  /// Mise en avant dans la FAQ du cours par un éditeur
+  inFaq     Boolean      @default(false)
+  answers   PageAnswer[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([pageId, createdAt])
+}
+
+model PageAnswer {
+  id         String       @id @default(cuid())
+  questionId String
+  question   PageQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body       String       @db.Text
+  createdAt  DateTime     @default(now())
+
+  @@index([questionId, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -143,31 +213,39 @@ model Page {
 // ─────────────────────────────────────────────────────────────
 
 model Sae {
-  id          String      @id @default(cuid())
+  id            String         @id @default(cuid())
   /// Code référentiel, ex. "SAÉ 2.01"
-  code        String?
-  title       String
-  semester    Int?
+  code          String?
+  title         String
+  semester      Int?
   /// Compétences visées, texte libre (ex. "C1 Réaliser, C2 Optimiser")
-  competences String?     @db.Text
+  competences   String?        @db.Text
   /// Sujet de la SAE (blocs BlockNote)
-  content     Json?
-  markdown    String?     @db.LongText
-  startsAt    DateTime?
-  endsAt      DateTime?
-  published   Boolean     @default(false)
-  courseId    String?
-  course      Course?     @relation(fields: [courseId], references: [id], onDelete: SetNull)
-  ownerId     String
-  owner       User        @relation("SaeOwner", fields: [ownerId], references: [id])
-  teachers    User[]      @relation("SaeTeachers")
-  milestones  Milestone[]
-  groups      Group[]
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  content       Json?
+  markdown      String?        @db.LongText
+  startsAt      DateTime?
+  endsAt        DateTime?
+  published     Boolean        @default(false)
+  courseId      String?
+  course        Course?        @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  ownerId       String
+  owner         User           @relation("SaeOwner", fields: [ownerId], references: [id])
+  teachers      User[]         @relation("SaeTeachers")
+  milestones    Milestone[]
+  groups        Group[]
+  /// Promo concernée (permet d'ajouter tous ses étudiants d'un coup)
+  cohortId      String?
+  cohort        Cohort?        @relation(fields: [cohortId], references: [id], onDelete: SetNull)
+  /// SAÉ d'origine en cas de duplication (reconduction d'une année sur l'autre)
+  sourceSaeId   String?
+  announcements Announcement[]
+  defenseSlots  DefenseSlot[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
   @@index([ownerId])
   @@index([courseId])
+  @@fulltext([title, markdown])
 }
 
 model Milestone {
@@ -183,6 +261,9 @@ model Milestone {
   criteria           Criterion[]
   assessments        SelfAssessment[]
   depositLinks       DepositLink[]
+  /// Active l'évaluation de la contribution entre membres du groupe
+  peerReviewEnabled  Boolean          @default(false)
+  peerReviews        PeerReview[]
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
@@ -195,27 +276,41 @@ model Criterion {
   milestone   Milestone            @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
   label       String
   description String?              @db.Text
-  /// Code d'apprentissage critique (ex. "AC11.01"), optionnel
+  /// Code d'apprentissage critique (ex. "AC11.01"), optionnel — texte libre historique
   acCode      String?
+  /// Rattachement au référentiel (prioritaire sur acCode)
+  learningId  String?
+  learning    CriticalLearning?    @relation(fields: [learningId], references: [id], onDelete: SetNull)
   position    Int                  @default(0)
   items       SelfAssessmentItem[]
 
   @@index([milestoneId, position])
+  @@index([learningId])
 }
 
 model Group {
-  id           String           @id @default(cuid())
-  saeId        String
-  sae          Sae              @relation(fields: [saeId], references: [id], onDelete: Cascade)
-  name         String
+  id               String           @id @default(cuid())
+  saeId            String
+  sae              Sae              @relation(fields: [saeId], references: [id], onDelete: Cascade)
+  name             String
   /// Espace de travail partagé du groupe (blocs BlockNote)
-  content      Json?
-  markdown     String?          @db.LongText
-  members      GroupMember[]
-  depositLinks DepositLink[]
-  assessments  SelfAssessment[]
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  content          Json?
+  markdown         String?          @db.LongText
+  members          GroupMember[]
+  depositLinks     DepositLink[]
+  assessments      SelfAssessment[]
+  peerReviews      PeerReview[]
+  defenseSlot      DefenseSlot?
+  /// Vitrine publique des projets (proposée par le groupe, validée par l'équipe pédagogique)
+  showcaseStatus   ShowcaseStatus   @default(NONE)
+  showcaseTitle    String?
+  showcaseSummary  String?          @db.Text
+  showcaseUrl      String?          @db.VarChar(2048)
+  showcaseImageUrl String?          @db.VarChar(2048)
+  /// Catégorie (inspirée du Festival MMI) : GRAPHISME, AUDIOVISUEL, ANIMATION, UX, WEB, AUTRE
+  showcaseCategory String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
   @@unique([saeId, name])
 }
@@ -223,11 +318,14 @@ model Group {
 model GroupMember {
   groupId  String
   group    Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  /// Dénormalisé depuis Group.saeId : garantit en base « un seul groupe par étudiant et par SAÉ »
+  saeId    String
   userId   String
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   joinedAt DateTime @default(now())
 
   @@id([groupId, userId])
+  @@unique([saeId, userId])
   @@index([userId])
 }
 
@@ -242,17 +340,22 @@ enum DepositProvider {
 
 /// Aucun fichier n'est stocké : uniquement des URL de dépôt externes.
 model DepositLink {
-  id          String          @id @default(cuid())
+  id          String           @id @default(cuid())
   groupId     String
-  group       Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  group       Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
   milestoneId String?
-  milestone   Milestone?      @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
-  url         String          @db.VarChar(2048)
+  milestone   Milestone?       @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  url         String           @db.VarChar(2048)
   label       String?
-  provider    DepositProvider @default(OTHER)
+  provider    DepositProvider  @default(OTHER)
   addedById   String
-  addedBy     User            @relation(fields: [addedById], references: [id])
-  createdAt   DateTime        @default(now())
+  addedBy     User             @relation(fields: [addedById], references: [id])
+  /// Vérification d'accessibilité du lien (voir src/lib/link-check.ts)
+  checkedAt   DateTime?
+  checkStatus LinkCheckStatus?
+  checkHttp   Int?
+  checkNote   String?
+  createdAt   DateTime         @default(now())
 
   @@index([groupId])
   @@index([milestoneId])
@@ -264,35 +367,42 @@ enum AssessmentStatus {
 }
 
 model SelfAssessment {
-  id          String               @id @default(cuid())
-  milestoneId String
-  milestone   Milestone            @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  groupId     String?
-  group       Group?               @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  status      AssessmentStatus     @default(DRAFT)
+  id                  String               @id @default(cuid())
+  milestoneId         String
+  milestone           Milestone            @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+  userId              String
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  groupId             String?
+  group               Group?               @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  status              AssessmentStatus     @default(DRAFT)
   /// Réflexion globale de l'étudiant (ce qui a marché, difficultés, suite)
-  reflection  String?              @db.Text
-  submittedAt DateTime?
-  items       SelfAssessmentItem[]
-  comments    Comment[]
-  createdAt   DateTime             @default(now())
-  updatedAt   DateTime             @updatedAt
+  reflection          String?              @db.Text
+  submittedAt         DateTime?
+  /// Positionnement enseignant : brouillon tant que non publié
+  feedbackPublishedAt DateTime?
+  feedbackById        String?
+  feedbackBy          User?                @relation("FeedbackBy", fields: [feedbackById], references: [id], onDelete: SetNull)
+  items               SelfAssessmentItem[]
+  comments            Comment[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
 
   @@unique([milestoneId, userId])
   @@index([groupId])
 }
 
 model SelfAssessmentItem {
-  id            String         @id @default(cuid())
-  assessmentId  String
-  assessment    SelfAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  criterionId   String
-  criterion     Criterion      @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+  id             String         @id @default(cuid())
+  assessmentId   String
+  assessment     SelfAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  criterionId    String
+  criterion      Criterion      @relation(fields: [criterionId], references: [id], onDelete: Cascade)
   /// Niveau d'auto-positionnement 1..4 (voir src/lib/assessment.ts)
-  level         Int
-  justification String?        @db.Text
+  level          Int
+  justification  String?        @db.Text
+  /// Niveau attribué par l'enseignant (1..4), visible par l'étudiant une fois publié
+  teacherLevel   Int?
+  teacherComment String?        @db.Text
 
   @@unique([assessmentId, criterionId])
 }
@@ -307,4 +417,233 @@ model Comment {
   createdAt    DateTime       @default(now())
 
   @@index([assessmentId, createdAt])
+}
+
+enum ShowcaseStatus {
+  NONE
+  PENDING
+  PUBLISHED
+}
+
+enum LinkCheckStatus {
+  OK
+  PRIVATE
+  BROKEN
+  UNREACHABLE
+}
+
+// ─────────────────────────────────────────────────────────────
+// Référentiel de compétences (BUT, programme national) :
+// compétences → composantes essentielles + apprentissages critiques
+// ─────────────────────────────────────────────────────────────
+
+model Competence {
+  id          String               @id @default(cuid())
+  /// "C1".."C5"
+  code        String               @unique
+  /// Verbe court ("Comprendre")
+  name        String
+  /// Intitulé complet
+  description String?              @db.Text
+  /// Couleur d'affichage (hex), utilisée dans le radar
+  color       String?
+  position    Int                  @default(0)
+  /// Libellés des niveaux, ex. ["Comprendre les éléments…", "…", "…"] (JSON)
+  levelLabels Json?
+  components  EssentialComponent[]
+  learnings   CriticalLearning[]
+}
+
+/// Composante essentielle ("CE4.01 … en se conformant aux standards du Web…")
+model EssentialComponent {
+  id           String     @id @default(cuid())
+  code         String     @unique
+  label        String     @db.Text
+  competenceId String
+  competence   Competence @relation(fields: [competenceId], references: [id], onDelete: Cascade)
+}
+
+model CriticalLearning {
+  id           String              @id @default(cuid())
+  /// "AC14.02" : niveau 1, compétence 4, n°02
+  code         String              @unique
+  label        String              @db.Text
+  /// Niveau de compétence 1..3 (≈ année de BUT)
+  level        Int
+  competenceId String
+  competence   Competence          @relation(fields: [competenceId], references: [id], onDelete: Cascade)
+  /// Parcours concerné (null = tronc commun)
+  parcours     String?
+  criteria     Criterion[]
+  evidences    PortfolioEvidence[]
+
+  @@index([competenceId, level])
+}
+
+/// Trace de portfolio : preuve (URL) rattachée à un apprentissage critique
+model PortfolioEvidence {
+  id         String           @id @default(cuid())
+  userId     String
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  learningId String
+  learning   CriticalLearning @relation(fields: [learningId], references: [id], onDelete: Cascade)
+  title      String
+  url        String?          @db.VarChar(2048)
+  reflection String?          @db.Text
+  /// Auto-positionnement 1..4
+  level      Int?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([userId, learningId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Promos, annonces, notifications, favoris
+// ─────────────────────────────────────────────────────────────
+
+model Cohort {
+  id            String         @id @default(cuid())
+  /// ex. "MMI 1 — TD A"
+  name          String
+  /// Année de BUT 1..3
+  year          Int
+  /// "Crea" | "Strat-UX" | "DWeb-DI" | null (tronc commun)
+  parcours      String?
+  /// ex. "2026-2027"
+  academicYear  String
+  members       CohortMember[]
+  saes          Sae[]
+  announcements Announcement[]
+  createdAt     DateTime       @default(now())
+
+  @@unique([name, academicYear])
+}
+
+model CohortMember {
+  cohortId String
+  cohort   Cohort @relation(fields: [cohortId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([cohortId, userId])
+  @@index([userId])
+}
+
+enum AnnouncementScope {
+  GLOBAL
+  COHORT
+  COURSE
+  SAE
+}
+
+model Announcement {
+  id        String            @id @default(cuid())
+  scope     AnnouncementScope
+  cohortId  String?
+  cohort    Cohort?           @relation(fields: [cohortId], references: [id], onDelete: Cascade)
+  courseId  String?
+  course    Course?           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  saeId     String?
+  sae       Sae?              @relation(fields: [saeId], references: [id], onDelete: Cascade)
+  title     String
+  /// Texte brut (sauts de ligne conservés), jamais interprété comme HTML
+  body      String            @db.Text
+  pinned    Boolean           @default(false)
+  authorId  String
+  author    User              @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  createdAt DateTime          @default(now())
+
+  @@index([scope, createdAt])
+  @@index([courseId])
+  @@index([saeId])
+  @@index([cohortId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// ex. "comment", "feedback", "announcement", "question", "answer", "defense", "showcase"
+  type      String
+  title     String
+  body      String?   @db.Text
+  /// Lien interne (chemin commençant par /)
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt, createdAt])
+}
+
+enum FavoriteKind {
+  COURSE
+  PAGE
+  SAE
+}
+
+model Favorite {
+  id        String       @id @default(cuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      FavoriteKind
+  targetId  String
+  createdAt DateTime     @default(now())
+
+  @@unique([userId, kind, targetId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Évaluation : banque de commentaires, contribution entre pairs, soutenances
+// ─────────────────────────────────────────────────────────────
+
+model CommentSnippet {
+  id        String   @id @default(cuid())
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  /// Étiquette libre pour filtrer (ex. code AC, "accessibilité")
+  tag       String?
+  body      String   @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([authorId])
+}
+
+/// Contribution d'un coéquipier (anonyme pour l'évalué, visible par l'équipe pédagogique)
+model PeerReview {
+  id           String    @id @default(cuid())
+  milestoneId  String
+  milestone    Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+  groupId      String
+  group        Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  reviewerId   String
+  reviewer     User      @relation("PeerReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+  revieweeId   String
+  reviewee     User      @relation("PeerReviewee", fields: [revieweeId], references: [id], onDelete: Cascade)
+  /// 1..4 (voir src/lib/assessment.ts CONTRIBUTION_LEVELS)
+  contribution Int
+  comment      String?   @db.Text
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([milestoneId, reviewerId, revieweeId])
+  @@index([groupId])
+}
+
+/// Créneau de soutenance réservable par un groupe
+model DefenseSlot {
+  id          String    @id @default(cuid())
+  saeId       String
+  sae         Sae       @relation(fields: [saeId], references: [id], onDelete: Cascade)
+  startsAt    DateTime
+  durationMin Int       @default(20)
+  location    String?
+  /// Membres du jury (texte libre)
+  jury        String?
+  groupId     String?   @unique
+  group       Group?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  bookedAt    DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([saeId, startsAt])
 }

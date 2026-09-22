@@ -55,12 +55,12 @@ export function ActionForm({
     >
       <PendingContext.Provider value={pending}>{children}</PendingContext.Provider>
       {state && !state.ok && (
-        <p role="alert" className="form-error mt-2 basis-full">
+        <p role="alert" className="form-error mt-2 basis-full whitespace-pre-line">
           {state.error}
         </p>
       )}
       {state?.ok && state.message && !quiet && (
-        <p role="status" className="mt-2 basis-full text-sm text-ok">
+        <p role="status" className="mt-2 basis-full text-sm whitespace-pre-line text-ok">
           {state.message}
         </p>
       )}

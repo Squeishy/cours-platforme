@@ -11,7 +11,7 @@ type Props = {
   confirmMessage?: string;
   /** Libellé accessible si le texte visible est ambigu (ex. « ↑ ») */
   ariaLabel?: string;
-  variant?: "default" | "primary" | "danger";
+  variant?: "default" | "primary" | "danger" | "ghost";
   className?: string;
 };
 
@@ -19,6 +19,7 @@ const VARIANT: Record<NonNullable<Props["variant"]>, string> = {
   default: "btn",
   primary: "btn btn-primary",
   danger: "btn btn-danger",
+  ghost: "btn btn-ghost",
 };
 
 /** Bouton isolé qui déclenche une Server Action et affiche son erreur éventuelle */

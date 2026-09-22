@@ -12,7 +12,7 @@ export function NewCourseForm() {
         <label htmlFor="new-course-title" className="label">
           Titre
         </label>
-        <input id="new-course-title" name="title" required maxLength={200} className="input" />
+        <input id="new-course-title" name="title" required maxLength={190} className="input" />
       </div>
       <div>
         <label htmlFor="new-course-summary" className="label">

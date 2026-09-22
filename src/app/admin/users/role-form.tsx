@@ -1,8 +1,9 @@
 "use client";
 
-import { useActionState, useId } from "react";
-import type { FormAction } from "@/app/courses/_lib/action-state";
+import { useId } from "react";
 import type { Role } from "@/lib/permissions";
+import type { FormAction } from "./_lib/form-result";
+import { ActionForm, SubmitButton } from "./_components/action-form";
 
 type Props = {
   action: FormAction;
@@ -14,36 +15,26 @@ type Props = {
 };
 
 export function RoleForm({ action, userName, currentRole, roles, locked = false }: Props) {
-  const [state, formAction, pending] = useActionState(action, null);
   const id = useId();
 
   return (
-    <form action={formAction} className="flex flex-col gap-1">
+    <ActionForm action={action} className="flex flex-col gap-1">
       <label htmlFor={id} className="text-sm font-medium md:sr-only">
         Rôle <span className="sr-only">de {userName}</span>
       </label>
       <div className="flex flex-wrap items-center gap-2">
-        <select
-          id={id}
-          name="role"
-          defaultValue={currentRole}
-          disabled={locked}
-          className="input w-auto min-w-0 flex-1 sm:flex-none"
-        >
+        <select id={id} name="role" defaultValue={currentRole} disabled={locked} className="input w-auto min-w-0 flex-1 sm:flex-none">
           {roles.map((r) => (
             <option key={r.value} value={r.value}>
               {r.label}
             </option>
           ))}
         </select>
-        <button type="submit" className="btn" disabled={locked || pending}>
-          {pending ? "Envoi…" : "Appliquer"}
-        </button>
+        <SubmitButton className="btn" pendingLabel="Envoi…" disabled={locked}>
+          Appliquer
+        </SubmitButton>
       </div>
       {locked && <p className="text-xs text-muted">Vous ne pouvez pas modifier votre propre rôle.</p>}
-      <p role="status" aria-live="polite" className={state && !state.ok ? "form-error" : "text-xs text-ok"}>
-        {state ? (state.ok ? "Rôle mis à jour." : state.error) : ""}
-      </p>
-    </form>
+    </ActionForm>
   );
 }

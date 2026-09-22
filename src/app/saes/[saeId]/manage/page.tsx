@@ -26,13 +26,27 @@ import {
 } from "../../actions";
 import { ActionForm, SubmitButton } from "../../_components/action-form";
 import { SaeFields, type CourseOption } from "../../_components/sae-fields";
-import { findEditableCourses } from "../../_lib/queries";
+import { findCohortOptions, findEditableCourses, loadAcGroups } from "../../_lib/queries";
 import { formatDateTime } from "../../_lib/dates";
-import { Checkbox, CriterionFields, EditDisclosure, MilestoneFields, MoveButtons } from "./fields";
+import { criterionCode, learningHint, levelForSemester } from "../../_lib/criteria";
+import { Checkbox, EditDisclosure, MilestoneFields, MoveButtons } from "./fields";
+import { AcOptionsProvider, CriterionFields } from "./criterion-fields";
+import { AnnouncementsSection } from "./announcements";
+import { AutoGroupsCard, BulkMembersForm } from "./group-formation";
+import { DuplicateSection } from "./duplicate-form";
 
 export const metadata: Metadata = { title: "Gérer la SAÉ" };
 
 const plural = (n: number, singular: string, pluralForm = `${singular}s`) => `${n} ${n > 1 ? pluralForm : singular}`;
+
+const SECTIONS = [
+  ["reglages", "Réglages"],
+  ["equipe", "Équipe"],
+  ["annonces", "Annonces"],
+  ["jalons", "Jalons"],
+  ["groupes", "Groupes"],
+  ["reconduire", "Reconduire"],
+] as const;
 
 export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]/manage">) {
   const { saeId } = await params;
@@ -44,18 +58,25 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
       owner: { select: { id: true, name: true, email: true } },
       teachers: { select: { id: true, name: true, email: true }, orderBy: { name: "asc" } },
       course: { select: { id: true, title: true } },
+      cohort: { select: { id: true, name: true, academicYear: true } },
       milestones: {
         orderBy: [{ position: "asc" }, { createdAt: "asc" }],
+        take: 200,
         include: {
           criteria: {
             orderBy: [{ position: "asc" }, { id: "asc" }],
-            include: { _count: { select: { items: true } } },
+            take: 200,
+            include: {
+              learning: { select: { code: true, label: true } },
+              _count: { select: { items: true } },
+            },
           },
           _count: { select: { assessments: true } },
         },
       },
       groups: {
         orderBy: { name: "asc" },
+        take: 500,
         include: {
           members: {
             orderBy: { joinedAt: "asc" },
@@ -64,18 +85,37 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
           _count: { select: { depositLinks: true } },
         },
       },
+      announcements: {
+        orderBy: [{ pinned: "desc" }, { createdAt: "desc" }],
+        take: 20,
+        select: { id: true, title: true, body: true, pinned: true, createdAt: true, author: { select: { name: true } } },
+      },
+      _count: { select: { defenseSlots: true } },
     },
   });
   if (!sae) notFound();
   assertAllowed(canManageSae(user, sae));
 
-  const editableCourses = await findEditableCourses(user);
+  const [editableCourses, cohorts, acGroups, unassigned] = await Promise.all([
+    findEditableCourses(user),
+    findCohortOptions(),
+    loadAcGroups(),
+    sae.cohortId
+      ? db.cohortMember.count({
+          where: {
+            cohortId: sae.cohortId,
+            user: { role: "STUDENT", memberships: { none: { group: { saeId: sae.id } } } },
+          },
+        })
+      : Promise.resolve(0),
+  ]);
   // Le cours actuellement lié reste sélectionnable même si je ne peux pas l'éditer
   const courses: CourseOption[] =
     sae.course && !editableCourses.some((c) => c.id === sae.course?.id)
       ? [sae.course, ...editableCourses]
       : editableCourses;
   const canDelete = canDeleteSae(user, sae);
+  const defaultLevel = levelForSemester(sae.semester);
 
   return (
     <div className="space-y-10">
@@ -85,10 +125,16 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
         </Link>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm text-muted">Gestion{sae.code ? ` · ${sae.code}` : ""}</p>
-            <h1 className="text-2xl font-semibold break-words">{sae.title}</h1>
-            <p className="mt-1">
-              <span className="badge">{sae.published ? "Publiée" : "Brouillon"}</span>
+            <p className="eyebrow font-mono">
+              Gestion{sae.code ? ` · ${sae.code}` : ""}
+              {sae.semester ? ` · S${sae.semester}` : ""}
+            </p>
+            <h1 className="text-2xl font-semibold text-balance break-words">{sae.title}</h1>
+            <p className="mt-1 flex flex-wrap gap-2">
+              <span className={`badge ${sae.published ? "badge-ok" : "badge-warn"}`}>
+                {sae.published ? "Publiée" : "Brouillon"}
+              </span>
+              {sae.cohort && <span className="badge">Promo {sae.cohort.name}</span>}
             </p>
           </div>
           <ActionForm action={setSaePublished} className="max-w-full">
@@ -102,19 +148,22 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
             </SubmitButton>
           </ActionForm>
         </div>
+        <div className="flex flex-wrap gap-2">
+          <Link href={`/saes/${sae.id}/defenses`} className="btn">
+            Soutenances
+            <span className="font-mono text-xs text-muted">{sae._count.defenseSlots}</span>
+          </Link>
+          {/* Route handler (téléchargement) : lien natif, pas de navigation client */}
+          <a href={`/saes/${sae.id}/export`} className="btn" download>
+            Exporter le suivi (CSV)
+          </a>
+        </div>
         <nav aria-label="Sections" className="flex flex-wrap gap-x-4 text-sm">
-          <a href="#reglages" className="flex min-h-11 items-center underline">
-            Réglages
-          </a>
-          <a href="#equipe" className="flex min-h-11 items-center underline">
-            Équipe
-          </a>
-          <a href="#jalons" className="flex min-h-11 items-center underline">
-            Jalons
-          </a>
-          <a href="#groupes" className="flex min-h-11 items-center underline">
-            Groupes
-          </a>
+          {SECTIONS.map(([anchor, label]) => (
+            <a key={anchor} href={`#${anchor}`} className="flex min-h-11 items-center underline">
+              {label}
+            </a>
+          ))}
         </nav>
       </header>
 
@@ -128,6 +177,7 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
           <SaeFields
             idPrefix="settings"
             courses={courses}
+            cohorts={cohorts}
             defaults={{
               code: sae.code,
               title: sae.title,
@@ -136,6 +186,7 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
               startsAt: sae.startsAt,
               endsAt: sae.endsAt,
               courseId: sae.courseId,
+              cohortId: sae.cohortId,
             }}
           />
           <Checkbox id="settings-published" name="published" defaultChecked={sae.published}>
@@ -200,174 +251,214 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
         </div>
       </section>
 
+      {/* ── Annonces ─────────────────────────────────────────── */}
+      <AnnouncementsSection
+        saeId={sae.id}
+        published={sae.published}
+        cohortLinked={!!sae.cohortId}
+        announcements={sae.announcements}
+      />
+
       {/* ── Jalons & critères ────────────────────────────────── */}
       <section aria-labelledby="jalons" className="scroll-mt-4 space-y-3">
         <h2 id="jalons" className="text-xl font-semibold">
           Jalons
         </h2>
-        {sae.milestones.length === 0 ? (
-          <p className="card text-muted">Aucun jalon pour l&apos;instant.</p>
-        ) : (
-          <ol className="space-y-4">
-            {sae.milestones.map((m, mIndex) => {
-              const itemCount = m.criteria.reduce((sum, c) => sum + c._count.items, 0);
-              const deleteWarning =
-                `Supprimer le jalon « ${m.title} » ?` +
-                (m.criteria.length > 0 || m._count.assessments > 0
-                  ? ` Ses ${plural(m.criteria.length, "critère")} et ${plural(
-                      m._count.assessments,
-                      "auto-évaluation",
-                    )} d'étudiants seront définitivement supprimés.`
-                  : "");
-              return (
-                <li key={m.id} className="card space-y-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <h3 className="font-semibold break-words">
-                        <span className="text-muted">{mIndex + 1}. </span>
-                        {m.title}
-                      </h3>
-                      <p className="text-sm text-muted">
-                        {m.dueAt ? `Échéance : ${formatDateTime(m.dueAt)}` : "Sans échéance"}
-                        {m._count.assessments > 0 && ` · ${plural(m._count.assessments, "auto-évaluation")}`}
-                      </p>
-                      {m.requiresDepositUrl && <span className="badge mt-1">Dépôt d&apos;URL requis</span>}
-                    </div>
-                    <MoveButtons
-                      action={moveMilestone}
-                      idName="milestoneId"
-                      idValue={m.id}
-                      label={`le jalon ${m.title}`}
-                      isFirst={mIndex === 0}
-                      isLast={mIndex === sae.milestones.length - 1}
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <Link href={`/saes/${sae.id}/milestones/${m.id}`} className="btn">
-                      Suivi du jalon
-                    </Link>
-                  </div>
-
-                  <EditDisclosure summary="Modifier le jalon">
-                    <ActionForm action={updateMilestone} className="space-y-3" aria-label={`Modifier ${m.title}`}>
-                      <input type="hidden" name="milestoneId" value={m.id} />
-                      <MilestoneFields
-                        idPrefix={`milestone-${m.id}`}
-                        defaults={{
-                          title: m.title,
-                          description: m.description,
-                          dueAt: m.dueAt,
-                          requiresDepositUrl: m.requiresDepositUrl,
-                        }}
+        <AcOptionsProvider groups={acGroups}>
+          {sae.milestones.length === 0 ? (
+            <p className="card text-muted">
+              Aucun jalon. Ajoutez le premier pour que les étudiants voient l&apos;échéance.
+            </p>
+          ) : (
+            <ol className="space-y-4">
+              {sae.milestones.map((m, mIndex) => {
+                const itemCount = m.criteria.reduce((sum, c) => sum + c._count.items, 0);
+                const deleteWarning =
+                  `Supprimer le jalon « ${m.title} » ?` +
+                  (m.criteria.length > 0 || m._count.assessments > 0
+                    ? ` Ses ${plural(m.criteria.length, "critère")} et ${plural(
+                        m._count.assessments,
+                        "auto-évaluation",
+                      )} d'étudiants seront définitivement supprimés.`
+                    : "");
+                return (
+                  <li key={m.id} className="card space-y-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h3 className="font-semibold break-words">
+                          <span className="font-mono text-muted">{mIndex + 1}. </span>
+                          {m.title}
+                        </h3>
+                        <p className="text-sm text-muted">
+                          {m.dueAt ? `Échéance : ${formatDateTime(m.dueAt)}` : "Sans échéance"}
+                          {m._count.assessments > 0 && ` · ${plural(m._count.assessments, "auto-évaluation")}`}
+                        </p>
+                        {(m.requiresDepositUrl || m.peerReviewEnabled) && (
+                          <p className="mt-1 flex flex-wrap gap-2">
+                            {m.requiresDepositUrl && <span className="badge">Dépôt d&apos;URL requis</span>}
+                            {m.peerReviewEnabled && <span className="badge">Contribution entre pairs</span>}
+                          </p>
+                        )}
+                      </div>
+                      <MoveButtons
+                        action={moveMilestone}
+                        idName="milestoneId"
+                        idValue={m.id}
+                        label={`le jalon ${m.title}`}
+                        isFirst={mIndex === 0}
+                        isLast={mIndex === sae.milestones.length - 1}
                       />
-                      <SubmitButton pendingLabel="Enregistrement…">Enregistrer le jalon</SubmitButton>
-                    </ActionForm>
-                  </EditDisclosure>
+                    </div>
 
-                  {/* Critères */}
-                  <div className="space-y-3 border-t border-line pt-4">
-                    <h4 className="font-medium">
-                      Critères <span className="text-sm font-normal text-muted">({m.criteria.length})</span>
-                    </h4>
-                    {m.criteria.length === 0 ? (
-                      <p className="text-sm text-muted">Aucun critère pour l&apos;instant.</p>
-                    ) : (
-                      <ol className="divide-y divide-line">
-                        {m.criteria.map((c, cIndex) => (
-                          <li key={c.id} className="space-y-3 py-3">
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div className="min-w-0 flex-1">
-                                <p className="break-words">
-                                  {c.acCode && <span className="badge mr-2 font-mono">{c.acCode}</span>}
-                                  {c.label}
-                                </p>
-                                {c.description && (
-                                  <p className="mt-1 text-sm text-muted break-words whitespace-pre-line">
-                                    {c.description}
-                                  </p>
-                                )}
-                                {c._count.items > 0 && (
-                                  <p className="mt-1 text-xs text-muted">
-                                    {plural(c._count.items, "positionnement")} d&apos;étudiants
-                                  </p>
-                                )}
-                              </div>
-                              <MoveButtons
-                                action={moveCriterion}
-                                idName="criterionId"
-                                idValue={c.id}
-                                label={`le critère ${c.label}`}
-                                isFirst={cIndex === 0}
-                                isLast={cIndex === m.criteria.length - 1}
-                              />
-                            </div>
-                            <div className="flex flex-wrap items-start gap-2">
-                              <EditDisclosure summary="Modifier">
-                                <ActionForm
-                                  action={updateCriterion}
-                                  className="space-y-3"
-                                  aria-label={`Modifier le critère ${c.label}`}
-                                >
-                                  <input type="hidden" name="criterionId" value={c.id} />
-                                  <CriterionFields
-                                    idPrefix={`criterion-${c.id}`}
-                                    defaults={{ label: c.label, description: c.description, acCode: c.acCode }}
-                                  />
-                                  <SubmitButton pendingLabel="Enregistrement…">Enregistrer le critère</SubmitButton>
-                                </ActionForm>
-                              </EditDisclosure>
-                              <ActionForm
-                                action={deleteCriterion}
-                                quiet
-                                confirmMessage={
-                                  c._count.items > 0
-                                    ? `Attention : ${plural(c._count.items, "positionnement")} d'étudiants sur « ${c.label} » seront définitivement supprimés avec ce critère. Continuer ?`
-                                    : `Supprimer le critère « ${c.label} » ?`
-                                }
-                              >
-                                <input type="hidden" name="criterionId" value={c.id} />
-                                <SubmitButton className="btn btn-danger" pendingLabel="Suppression…">
-                                  Supprimer
-                                </SubmitButton>
-                              </ActionForm>
-                            </div>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                    <EditDisclosure summary="Ajouter un critère">
-                      <ActionForm
-                        action={createCriterion}
-                        resetOnSuccess
-                        className="space-y-3"
-                        aria-label={`Ajouter un critère à ${m.title}`}
-                      >
+                    <div className="flex flex-wrap gap-2">
+                      <Link href={`/saes/${sae.id}/milestones/${m.id}`} className="btn">
+                        Suivi du jalon
+                      </Link>
+                    </div>
+
+                    <EditDisclosure summary="Modifier le jalon">
+                      <ActionForm action={updateMilestone} className="space-y-3" aria-label={`Modifier ${m.title}`}>
                         <input type="hidden" name="milestoneId" value={m.id} />
-                        <CriterionFields idPrefix={`new-criterion-${m.id}`} />
-                        <SubmitButton pendingLabel="Ajout…">Ajouter le critère</SubmitButton>
+                        <MilestoneFields
+                          idPrefix={`milestone-${m.id}`}
+                          defaults={{
+                            title: m.title,
+                            description: m.description,
+                            dueAt: m.dueAt,
+                            requiresDepositUrl: m.requiresDepositUrl,
+                            peerReviewEnabled: m.peerReviewEnabled,
+                          }}
+                        />
+                        <SubmitButton pendingLabel="Enregistrement…">Enregistrer le jalon</SubmitButton>
                       </ActionForm>
                     </EditDisclosure>
-                  </div>
 
-                  <div className="border-t border-line pt-4">
-                    <ActionForm action={deleteMilestone} quiet confirmMessage={deleteWarning}>
-                      <input type="hidden" name="milestoneId" value={m.id} />
-                      <SubmitButton className="btn btn-danger" pendingLabel="Suppression…">
-                        Supprimer le jalon
-                      </SubmitButton>
-                    </ActionForm>
-                    {itemCount > 0 && (
-                      <p className="mt-1 text-xs text-muted">
-                        Des étudiants se sont déjà positionnés sur ce jalon.
-                      </p>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-        )}
+                    {/* Critères */}
+                    <div className="space-y-3 border-t border-line pt-4">
+                      <h4 className="font-medium">
+                        Critères <span className="text-sm font-normal text-muted">({m.criteria.length})</span>
+                      </h4>
+                      {m.criteria.length === 0 ? (
+                        <p className="text-sm text-muted">
+                          Aucun critère. Rattachez-les aux apprentissages critiques pour alimenter le portfolio.
+                        </p>
+                      ) : (
+                        <ol className="divide-y divide-line">
+                          {m.criteria.map((c, cIndex) => {
+                            const code = criterionCode(c);
+                            const hint = learningHint(c);
+                            return (
+                              <li key={c.id} className="space-y-3 py-3">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="break-words">
+                                      {code && (
+                                        <span
+                                          className={`badge mr-2 font-mono ${c.learning ? "badge-accent" : ""}`}
+                                          title={c.learning ? "Rattaché au référentiel" : "Code libre (non rattaché)"}
+                                        >
+                                          {code}
+                                        </span>
+                                      )}
+                                      {c.label}
+                                    </p>
+                                    {hint && (
+                                      <p className="mt-1 text-xs text-muted break-words">
+                                        {c.learning?.code} — {hint}
+                                      </p>
+                                    )}
+                                    {c.description && (
+                                      <p className="mt-1 text-sm text-muted break-words whitespace-pre-line">
+                                        {c.description}
+                                      </p>
+                                    )}
+                                    {c._count.items > 0 && (
+                                      <p className="mt-1 text-xs text-muted">
+                                        {plural(c._count.items, "positionnement")} d&apos;étudiants
+                                      </p>
+                                    )}
+                                  </div>
+                                  <MoveButtons
+                                    action={moveCriterion}
+                                    idName="criterionId"
+                                    idValue={c.id}
+                                    label={`le critère ${c.label}`}
+                                    isFirst={cIndex === 0}
+                                    isLast={cIndex === m.criteria.length - 1}
+                                  />
+                                </div>
+                                <div className="flex flex-wrap items-start gap-2">
+                                  <EditDisclosure summary="Modifier">
+                                    <ActionForm
+                                      action={updateCriterion}
+                                      className="space-y-3"
+                                      aria-label={`Modifier le critère ${c.label}`}
+                                    >
+                                      <input type="hidden" name="criterionId" value={c.id} />
+                                      <CriterionFields
+                                        idPrefix={`criterion-${c.id}`}
+                                        defaultLevel={defaultLevel}
+                                        defaults={{
+                                          label: c.label,
+                                          description: c.description,
+                                          acCode: c.acCode,
+                                          learningId: c.learningId,
+                                        }}
+                                      />
+                                      <SubmitButton pendingLabel="Enregistrement…">Enregistrer le critère</SubmitButton>
+                                    </ActionForm>
+                                  </EditDisclosure>
+                                  <ActionForm
+                                    action={deleteCriterion}
+                                    quiet
+                                    confirmMessage={
+                                      c._count.items > 0
+                                        ? `Attention : ${plural(c._count.items, "positionnement")} d'étudiants sur « ${c.label} » seront définitivement supprimés avec ce critère. Continuer ?`
+                                        : `Supprimer le critère « ${c.label} » ?`
+                                    }
+                                  >
+                                    <input type="hidden" name="criterionId" value={c.id} />
+                                    <SubmitButton className="btn btn-danger" pendingLabel="Suppression…">
+                                      Supprimer
+                                    </SubmitButton>
+                                  </ActionForm>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      )}
+                      <EditDisclosure summary="Ajouter un critère">
+                        <ActionForm
+                          action={createCriterion}
+                          resetOnSuccess
+                          className="space-y-3"
+                          aria-label={`Ajouter un critère à ${m.title}`}
+                        >
+                          <input type="hidden" name="milestoneId" value={m.id} />
+                          <CriterionFields idPrefix={`new-criterion-${m.id}`} defaultLevel={defaultLevel} />
+                          <SubmitButton pendingLabel="Ajout…">Ajouter le critère</SubmitButton>
+                        </ActionForm>
+                      </EditDisclosure>
+                    </div>
+
+                    <div className="border-t border-line pt-4">
+                      <ActionForm action={deleteMilestone} quiet confirmMessage={deleteWarning}>
+                        <input type="hidden" name="milestoneId" value={m.id} />
+                        <SubmitButton className="btn btn-danger" pendingLabel="Suppression…">
+                          Supprimer le jalon
+                        </SubmitButton>
+                      </ActionForm>
+                      {itemCount > 0 && (
+                        <p className="mt-1 text-xs text-muted">Des étudiants se sont déjà positionnés sur ce jalon.</p>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </AcOptionsProvider>
 
         <div className="card space-y-3">
           <h3 className="font-semibold">Nouveau jalon</h3>
@@ -386,6 +477,8 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
         </h2>
         <p className="text-sm text-muted">Un étudiant ne peut appartenir qu&apos;à un seul groupe par SAÉ.</p>
 
+        <AutoGroupsCard saeId={sae.id} cohort={sae.cohort} unassigned={unassigned} />
+
         {sae.groups.length === 0 ? (
           <p className="card text-muted">Aucun groupe pour l&apos;instant.</p>
         ) : (
@@ -393,7 +486,10 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
             {sae.groups.map((g) => (
               <li key={g.id} className="card space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="min-w-0 font-semibold break-words">{g.name}</h3>
+                  <h3 className="min-w-0 font-semibold break-words">
+                    {g.name}{" "}
+                    <span className="font-mono text-xs font-normal text-muted">{plural(g.members.length, "membre")}</span>
+                  </h3>
                   <Link href={`/saes/${sae.id}/groups/${g.id}`} className="btn">
                     Espace du groupe
                   </Link>
@@ -446,6 +542,7 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
                 </ActionForm>
 
                 <div className="flex flex-wrap items-start gap-2 border-t border-line pt-3">
+                  <BulkMembersForm groupId={g.id} groupName={g.name} />
                   <EditDisclosure summary="Renommer">
                     <ActionForm action={renameGroup} aria-label={`Renommer ${g.name}`}>
                       <input type="hidden" name="groupId" value={g.id} />
@@ -507,6 +604,9 @@ export default async function ManageSaePage({ params }: PageProps<"/saes/[saeId]
           </ActionForm>
         </div>
       </section>
+
+      {/* ── Reconduction ─────────────────────────────────────── */}
+      <DuplicateSection saeId={sae.id} milestones={sae.milestones.length} />
 
       {/* ── Zone de danger ───────────────────────────────────── */}
       {canDelete && (

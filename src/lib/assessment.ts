@@ -16,3 +16,15 @@ export function levelLabel(level: number) {
 export function isValidLevel(level: number): level is Level {
   return LEVELS.some((l) => l.value === level);
 }
+
+/** Évaluation de la contribution d'un coéquipier (PeerReview.contribution) */
+export const CONTRIBUTION_LEVELS = [
+  { value: 1, label: "Peu impliqué·e", hint: "A peu contribué au travail du groupe" },
+  { value: 2, label: "Contribution partielle", hint: "A contribué, mais moins que prévu" },
+  { value: 3, label: "Contribution attendue", hint: "A fait sa part du travail" },
+  { value: 4, label: "Moteur du groupe", hint: "A porté le projet au-delà de sa part" },
+] as const;
+
+export function contributionLabel(value: number) {
+  return CONTRIBUTION_LEVELS.find((l) => l.value === value)?.label ?? "—";
+}

@@ -1,12 +1,16 @@
 "use client";
 
-import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
+import "./editor.css";
 import { useEffect, useRef, useState, useTransition } from "react";
-import { BlockNoteEditor, type PartialBlock } from "@blocknote/core";
+import { BlockNoteEditor } from "@blocknote/core";
+import { filterSuggestionItems } from "@blocknote/core/extensions";
 import { fr } from "@blocknote/core/locales";
-import { useCreateBlockNote } from "@blocknote/react";
+import { syntaxHighlighter } from "@blocknote/code-block";
+import { SuggestionMenuController, useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
+import { createEditorSchema, type EditorPartialBlock } from "./schema";
+import { getSlashMenuItems } from "./slash-menu";
 
 export type SaveResult = { ok: true } | { ok: false; error: string };
 export type SaveContent = (content: unknown, markdown: string) => Promise<SaveResult>;
@@ -19,6 +23,8 @@ type Props = {
   editable?: boolean;
   /** Server Action liée à la ressource ; absente = lecture seule */
   onSave?: SaveContent;
+  /** Instances PeerTube / Esup-Pod autorisées (lues côté serveur : getPeertubeHosts()) */
+  peertubeHosts?: string[];
 };
 
 type Status = "idle" | "dirty" | "saving" | "saved" | "error";
@@ -31,28 +37,38 @@ const STATUS_LABEL: Record<Status, string> = {
   error: "Échec de l'enregistrement",
 };
 
+const NO_HOSTS: string[] = [];
+
 /**
- * Éditeur « à la Notion » : tapez « / » pour insérer un bloc,
- * le Markdown est reconnu à la frappe (#, -, 1., ```, >) et au collage.
+ * Éditeur « à la Notion » : tapez « / » pour insérer un bloc (dont « Intégration » : Figma, YouTube, CodePen…),
+ * le Markdown est reconnu à la frappe (#, -, 1., ```, >) et au collage. Blocs de code colorés.
  * Enregistre automatiquement 1 s après la dernière frappe.
  */
-export default function BlockEditor({ initialContent, initialMarkdown, editable = false, onSave }: Props) {
+export default function BlockEditor({ initialContent, initialMarkdown, editable = false, onSave, peertubeHosts = NO_HOSTS }: Props) {
   const canEdit = editable && !!onSave;
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Schéma figé pour la durée de vie de l'éditeur (superset du schéma par défaut)
+  const [schema] = useState(() => createEditorSchema(peertubeHosts));
+
   // Contenu uniquement en Markdown (import BookStack, seed) : conversion AVANT la création
   // de l'éditeur, pour qu'elle ne soit ni annulable (Ctrl+Z) ni enregistrée comme une modification.
-  const [startBlocks] = useState<PartialBlock[] | undefined>(() => {
-    if (Array.isArray(initialContent) && initialContent.length > 0) return initialContent as PartialBlock[];
+  const [startBlocks] = useState<EditorPartialBlock[] | undefined>(() => {
+    if (Array.isArray(initialContent) && initialContent.length > 0) return initialContent as EditorPartialBlock[];
     if (!initialMarkdown) return undefined;
-    const blocks = BlockNoteEditor.create().tryParseMarkdownToBlocks(initialMarkdown);
+    const blocks = BlockNoteEditor.create({ schema }).tryParseMarkdownToBlocks(initialMarkdown);
     return blocks.length > 0 ? blocks : undefined;
   });
 
-  const editor = useCreateBlockNote({ dictionary: fr, initialContent: startBlocks });
+  const editor = useCreateBlockNote({
+    schema,
+    dictionary: fr,
+    initialContent: startBlocks,
+    extensions: [syntaxHighlighter],
+  });
 
   // Ne pas perdre une frappe si on quitte la page avant l'autosave
   useEffect(() => {
@@ -90,7 +106,7 @@ export default function BlockEditor({ initialContent, initialMarkdown, editable 
   return (
     <div className="rounded-md border border-line bg-surface">
       {canEdit && (
-        <div className="flex min-h-9 items-center justify-between gap-2 border-b border-line px-3 text-sm text-muted">
+        <div className="flex min-h-9 flex-wrap items-center justify-between gap-x-2 border-b border-line px-3 text-sm text-muted">
           <span>Tapez « / » pour insérer un bloc — Markdown accepté</span>
           <span role="status" aria-live="polite" className={status === "error" ? "text-danger" : undefined}>
             {STATUS_LABEL[status]}
@@ -99,7 +115,20 @@ export default function BlockEditor({ initialContent, initialMarkdown, editable 
         </div>
       )}
       <div className="py-4">
-        <BlockNoteView editor={editor} editable={canEdit} onChange={handleChange} theme="light" />
+        <BlockNoteView
+          editor={editor}
+          editable={canEdit}
+          onChange={handleChange}
+          slashMenu={false}
+          className="cours-editor"
+        >
+          {canEdit && (
+            <SuggestionMenuController
+              triggerCharacter="/"
+              getItems={async (query) => filterSuggestionItems(getSlashMenuItems(editor), query)}
+            />
+          )}
+        </BlockNoteView>
       </div>
     </div>
   );

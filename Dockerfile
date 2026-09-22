@@ -15,6 +15,10 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 FROM node:${NODE_VERSION} AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+# Les en-têtes (CSP frame-src) sont calculés au build : instances PeerTube / Esup-Pod autorisées.
+# Ce n'est pas un secret. À renseigner aussi à l'exécution (variable du même nom).
+ARG PEERTUBE_HOSTS=""
+ENV PEERTUBE_HOSTS=${PEERTUBE_HOSTS}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # Valeurs factices, uniquement pour le build (jamais présentes dans l'image finale)

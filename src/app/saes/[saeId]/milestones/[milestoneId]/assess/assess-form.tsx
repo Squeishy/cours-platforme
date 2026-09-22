@@ -2,9 +2,9 @@
 
 import { startTransition, useActionState, type FormEvent } from "react";
 import { LEVELS } from "@/lib/assessment";
-import type { ActionResult } from "@/app/assessments/_lib/shared";
+import type { ActionResult, CriterionView } from "@/app/assessments/_lib/shared";
 
-type Criterion = { id: string; label: string; description: string | null; acCode: string | null };
+type Criterion = CriterionView;
 type Existing = { level: number; justification: string | null };
 
 type Props = {
@@ -53,9 +53,12 @@ export function AssessForm({ action, criteria, existingItems, reflection }: Prop
                   <legend className="float-left w-full">
                     <span className="flex flex-wrap items-baseline gap-2">
                       <span className="text-sm text-muted">Critère {index + 1}</span>
-                      {criterion.acCode && <span className="badge font-mono text-ink">{criterion.acCode}</span>}
+                      {criterion.code && <span className="badge font-mono text-ink">{criterion.code}</span>}
                     </span>
                     <span className="mt-1 block font-semibold break-words">{criterion.label}</span>
+                    {criterion.learningLabel && (
+                      <span className="mt-1 block text-sm font-normal break-words text-muted">{criterion.learningLabel}</span>
+                    )}
                   </legend>
                   <div className="clear-both flex flex-col gap-3 pt-2">
                     {criterion.description && (
@@ -71,7 +74,7 @@ export function AssessForm({ action, criteria, existingItems, reflection }: Prop
                           <label
                             key={level.value}
                             htmlFor={inputId}
-                            className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-line p-3 has-[:checked]:border-accent has-[:checked]:bg-accent/5"
+                            className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-line p-3 has-[:checked]:border-accent has-[:checked]:bg-accent-soft"
                           >
                             <input
                               id={inputId}

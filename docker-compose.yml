@@ -36,12 +36,16 @@ services:
     build:
       context: .
       target: runner
+      args:
+        PEERTUBE_HOSTS: ${PEERTUBE_HOSTS:-}
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://${MARIADB_USER:-cours}:${MARIADB_PASSWORD}@db:3306/${MARIADB_DATABASE:-cours}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?à définir}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
       SIGNUP_ALLOWED_DOMAINS: ${SIGNUP_ALLOWED_DOMAINS:-}
+      PEERTUBE_HOSTS: ${PEERTUBE_HOSTS:-}
+      LINK_CHECK_ALLOW_HOSTS: ${LINK_CHECK_ALLOW_HOSTS:-}
       PORT: 3000
     ports:
       - "3000:3000"

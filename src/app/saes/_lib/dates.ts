@@ -87,3 +87,16 @@ export function formatDateRange(start: Date | null, end: Date | null): string | 
   if (end) return `Jusqu'au ${formatDate(end)}`;
   return null;
 }
+
+/**
+ * Décale une date d'un nombre de jours en conservant l'heure murale de Paris
+ * (une échéance à 18 h reste à 18 h de l'autre côté d'un changement d'heure).
+ */
+export function addParisDays(date: Date, days: number): Date {
+  const p = parisParts(date);
+  const shifted = new Date(Date.UTC(p.year, p.month - 1, p.day + days, p.hour, p.minute));
+  const local = `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}T${pad(
+    shifted.getUTCHours(),
+  )}:${pad(shifted.getUTCMinutes())}`;
+  return parisLocalToDate(local) ?? new Date(date.getTime() + days * 86_400_000);
+}

@@ -17,7 +17,7 @@ export function CourseSettingsForm({ action, course }: Props) {
         <label htmlFor="course-title" className="label">
           Titre
         </label>
-        <input id="course-title" name="title" required maxLength={200} defaultValue={course.title} className="input" />
+        <input id="course-title" name="title" required maxLength={190} defaultValue={course.title} className="input" />
       </div>
       <div>
         <label htmlFor="course-summary" className="label">

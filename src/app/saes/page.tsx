@@ -19,6 +19,7 @@ export default async function SaesPage() {
           OR: [{ published: true }, { ownerId: user.id }, { teachers: { some: { id: user.id } } }],
         },
     orderBy: [{ semester: "asc" }, { code: "asc" }, { title: "asc" }],
+    take: 300,
     select: {
       id: true,
       code: true,
@@ -29,6 +30,7 @@ export default async function SaesPage() {
       published: true,
       ownerId: true,
       teachers: { select: { id: true } },
+      cohort: { select: { name: true } },
       groups: {
         where: { members: { some: { userId: user.id } } },
         select: { name: true },
@@ -39,7 +41,10 @@ export default async function SaesPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">SAÉ</h1>
+        <div>
+          <p className="eyebrow">Situations d&apos;apprentissage et d&apos;évaluation</p>
+          <h1 className="text-2xl font-semibold">SAÉ</h1>
+        </div>
         {canCreateSae(user) && (
           <Link href="/saes/new" className="btn btn-primary">
             Nouvelle SAÉ
@@ -49,7 +54,7 @@ export default async function SaesPage() {
 
       {saes.length === 0 ? (
         <div className="card text-muted">
-          <p>Aucune SAÉ pour l&apos;instant.</p>
+          <p>Aucune SAÉ pour l&apos;instant. Elles apparaissent ici dès que l&apos;équipe pédagogique les publie.</p>
           {canCreateSae(user) && (
             <p className="mt-1">
               <Link href="/saes/new" className="underline">
@@ -70,10 +75,11 @@ export default async function SaesPage() {
                   className="card block h-full min-h-11 transition-colors hover:border-accent"
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    {sae.code && <span className="text-sm font-semibold text-accent">{sae.code}</span>}
-                    {sae.semester && <span className="badge">Semestre {sae.semester}</span>}
-                    {!sae.published && <span className="badge">Brouillon</span>}
-                    {canManageSae(user, sae) && <span className="badge">Gérée</span>}
+                    {sae.code && <span className="font-mono text-sm font-semibold text-accent">{sae.code}</span>}
+                    {sae.semester && <span className="badge font-mono">S{sae.semester}</span>}
+                    {sae.cohort && <span className="badge">{sae.cohort.name}</span>}
+                    {!sae.published && <span className="badge badge-warn">Brouillon</span>}
+                    {canManageSae(user, sae) && <span className="badge badge-accent">Gérée</span>}
                   </div>
                   <h2 className="mt-2 font-semibold break-words">{sae.title}</h2>
                   {range && <p className="mt-1 text-sm text-muted">{range}</p>}

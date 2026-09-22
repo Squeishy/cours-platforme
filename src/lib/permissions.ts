@@ -94,3 +94,99 @@ export function canReopenAssessment(u: Actor, sae: SaeLike) {
 export function canCommentAssessment(u: Actor, a: AssessmentLike, sae: SaeLike) {
   return canViewAssessment(u, a, sae);
 }
+
+// ── Positionnement enseignant (comparaison auto / enseignant) ─
+type FeedbackLike = AssessmentLike & { feedbackPublishedAt?: Date | null };
+
+export function canEvaluateAssessment(u: Actor, sae: SaeLike) {
+  return canManageSae(u, sae);
+}
+
+/** Niveaux et commentaires enseignant : équipe toujours ; l'étudiant une fois publiés ; jamais les pairs */
+export function canSeeTeacherFeedback(u: Actor, a: FeedbackLike, sae: SaeLike) {
+  if (canManageSae(u, sae)) return true;
+  return a.userId === u.id && !!a.feedbackPublishedAt;
+}
+
+// ── Contribution entre pairs ──────────────────────────────────
+/** Un membre évalue un AUTRE membre de son groupe */
+export function canReviewPeer(u: Actor, g: GroupLike, revieweeId: string) {
+  return revieweeId !== u.id && isGroupMember(u, g) && g.members.some((m) => m.userId === revieweeId);
+}
+
+/** Le détail (qui a noté qui) n'est visible que par l'équipe pédagogique */
+export function canSeePeerReviews(u: Actor, sae: SaeLike) {
+  return canManageSae(u, sae);
+}
+
+// ── Soutenances ──────────────────────────────────────────────
+export function canBookDefense(u: Actor, g: GroupLike, sae: SaeLike) {
+  return isGroupMember(u, g) || canManageSae(u, sae);
+}
+
+// ── Vitrine ──────────────────────────────────────────────────
+/** Le groupe propose, l'équipe pédagogique publie */
+export function canRequestShowcase(u: Actor, g: GroupLike) {
+  return isGroupMember(u, g);
+}
+
+export function canPublishShowcase(u: Actor, sae: SaeLike) {
+  return canManageSae(u, sae);
+}
+
+// ── Questions sur les pages de cours ─────────────────────────
+export function canAskQuestion(u: Actor, c: CourseLike) {
+  return canViewCourse(u, c);
+}
+
+export function canAnswerQuestion(u: Actor, c: CourseLike) {
+  return canViewCourse(u, c);
+}
+
+/** Résoudre, mettre en FAQ : éditeurs du cours ; l'auteur peut marquer « résolu » */
+export function canModerateQuestion(u: Actor, c: CourseLike) {
+  return canEditCourse(u, c);
+}
+
+export function canResolveQuestion(u: Actor, q: { authorId: string }, c: CourseLike) {
+  return q.authorId === u.id || canEditCourse(u, c);
+}
+
+/** L'anonymat vaut vis-à-vis des étudiants ; les éditeurs du cours voient l'auteur (modération) */
+export function canSeeAnonymousAuthor(u: Actor, c: CourseLike) {
+  return canEditCourse(u, c);
+}
+
+// ── Annonces ─────────────────────────────────────────────────
+export type AnnouncementTarget =
+  | { scope: "GLOBAL" }
+  | { scope: "COHORT" }
+  | { scope: "COURSE"; course: CourseLike }
+  | { scope: "SAE"; sae: SaeLike };
+
+export function canAnnounce(u: Actor, t: AnnouncementTarget) {
+  switch (t.scope) {
+    case "GLOBAL":
+      return isAdmin(u);
+    case "COHORT":
+      return isStaff(u);
+    case "COURSE":
+      return canEditCourse(u, t.course);
+    case "SAE":
+      return canManageSae(u, t.sae);
+  }
+}
+
+// ── Référentiel, promos, portfolio ───────────────────────────
+export function canManageReferentiel(u: Actor) {
+  return isAdmin(u);
+}
+
+export function canManageCohorts(u: Actor) {
+  return isAdmin(u);
+}
+
+/** Portfolio privé : l'étudiant et l'équipe enseignante ; public seulement via son lien partagé */
+export function canViewPortfolio(u: Actor, ownerId: string) {
+  return u.id === ownerId || isStaff(u);
+}

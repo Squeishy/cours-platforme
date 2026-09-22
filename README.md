@@ -1,77 +1,118 @@
-# Cours & SAÉ
+# Cours & SAÉ — plateforme du département BUT MMI
 
-Plateforme pour diffuser des **cours** et des **sujets de SAÉ** dans un éditeur par blocs « à la Notion »
-(Markdown à la frappe et au collage), organiser les **groupes** de SAÉ, collecter des **URL de dépôt**
-(GitHub, GitLab, Drive… — aucun fichier stocké) et faire **s'auto-positionner** les étudiants sur chaque
-point d'étape, avec **commentaires** des enseignants et des pairs.
+Diffuser les **cours** et les **sujets de SAÉ** dans un éditeur par blocs « à la Notion » (Markdown, intégrations
+Figma / YouTube / CodePen…), suivre les **groupes** et leurs **URL de dépôt** (aucun fichier stocké), faire
+**s'auto-positionner** les étudiants sur chaque jalon au regard des **apprentissages critiques du référentiel MMI**,
+comparer avec le **positionnement enseignant**, et construire le **portfolio de compétences**.
 
-> Base de travail : le style est volontairement minimal. Tout le thème est dans `src/app/globals.css`.
+> La recherche qui a guidé les fonctionnalités (benchmark Moodle, Canvas, BookStack, Karuta… + référentiel et
+> quotidien MMI) est dans [`docs/research/SYNTHESE.md`](docs/research/SYNTHESE.md).
+
+## Fonctionnalités
+
+**Étudiant·e**
+- **À faire** : tout ce qui est à rendre, trié (en retard / cette semaine / plus tard), avec l'état de son
+  auto-évaluation, de ses dépôts et de sa soutenance ; **flux ICS** pour son agenda (Google, Outlook, Apple).
+- **Auto-évaluation** par critère (niveau 1–4 + justification + réflexion), brouillon puis soumission ;
+  **retour enseignant** comparé à son propre positionnement.
+- **Espace de groupe** : page de travail partagée, URL de dépôt **vérifiées** (le lien Drive/Figma/GitHub est-il
+  vraiment accessible ?), réservation d'un **créneau de soutenance**, proposition à la **vitrine**.
+- **Évaluation de la contribution** des coéquipiers (anonyme pour l'évalué).
+- **Mes compétences** : radar des 5 compétences MMI et détail par AC. **Portfolio** : traces par AC, traces SAÉ
+  automatiques, lien public partageable, impression.
+- Questions **anonymes** sur les pages de cours, FAQ, recherche plein texte, favoris, notifications.
+
+**Enseignant·e**
+- Cours en arbre de pages, **historique des versions** et restauration, lien public, duplication, annonces.
+- SAÉ **depuis un modèle du Programme national**, critères reliés au **référentiel**, promo liée,
+  **groupes automatiques** ou par liste d'e-mails, **duplication** d'une année sur l'autre (dates décalées),
+  annonces, **créneaux de soutenance** en lot, **export CSV** du suivi (Excel FR).
+- **File de correction** (raccourcis j/k), positionnement par critère, **banque de commentaires**, écarts
+  auto/enseignant signalés, publication des retours (un par un ou en lot), matrice de contribution des groupes.
+- Page **À faire** enseignant : à corriger, liens à problème, vitrine à valider, questions sans réponse.
+
+**Administration** : utilisateurs et rôles, **promos**, **référentiel** (AC locaux possibles), annonces globales.
+
+**Accessibilité / RGPD** : mobile d'abord (320 px), mode sombre, navigation clavier, déclaration RGAA
+(`/accessibilite`), export de ses données (`/me/settings`).
 
 ## Stack
 
-| | |
-|---|---|
-| Front + back | Next.js 16 (App Router, Server Actions), React 19, TypeScript |
-| Base de données | MariaDB 11 via Prisma 7 (adaptateur `@prisma/adapter-mariadb`) |
-| Auth | Better Auth (e-mail + mot de passe), rôles `ADMIN` / `TEACHER` / `STUDENT` |
-| Éditeur | BlockNote (blocs, `/` pour insérer, Markdown import/export) |
-| UI | Tailwind CSS 4 |
-| Déploiement | Docker multi-stage (standalone) + docker-compose, compatible Dokploy |
+Next.js 16 (App Router, Server Actions) · React 19 · TypeScript · Tailwind CSS 4 · Prisma 7 + MariaDB 11 ·
+Better Auth (e-mail + mot de passe ; **CAS/OIDC préparé**, voir [`docs/AUTH-EXTERNE.md`](docs/AUTH-EXTERNE.md)) ·
+BlockNote 0.55 · Docker (image standalone) · Dokploy.
 
 ## Démarrer en local
 
 ```bash
-cp .env.example .env          # puis générer BETTER_AUTH_SECRET
+cp .env.example .env          # puis générer BETTER_AUTH_SECRET (openssl rand -base64 32)
 npm install
 docker compose up -d db       # MariaDB sur localhost:3307
-npm run db:migrate            # applique les migrations
-npm run db:seed               # données de démo
+npm run db:deploy             # applique les migrations
+npm run db:seed               # référentiel MMI officiel + données de démo (synthétiques)
 npm run dev                   # http://localhost:3000
 ```
 
-> `prisma migrate dev` a besoin d'une base « shadow ». En local, donner les droits à l'utilisateur :
-> `docker compose exec db mariadb -uroot -p -e "GRANT ALL ON *.* TO 'cours'@'%'"`
-
 Comptes de démo (mot de passe `demo-password-2026`) : `admin@demo.fr`, `prof@demo.fr`, `prof2@demo.fr`,
-`lea@demo.fr`, `hugo@demo.fr`, `ines@demo.fr`, `nathan@demo.fr`.
+`lea@demo.fr`, `hugo@demo.fr`, `ines@demo.fr`, `nathan@demo.fr`. **Toutes les données de démo sont fictives.**
 
-## Modèle
+> Nouvelle migration en dev : `npm run db:migrate` (interactif). Dans un terminal non interactif, générer le SQL
+> avec `npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script` puis
+> `npm run db:deploy`.
 
-- **Cours** → arbre de **pages** (contenu BlockNote JSON + export Markdown). Propriétaire + co-éditeurs.
-- **SAÉ** → sujet (éditeur), compétences, dates, cours lié, co-enseignants.
-  - **Jalons** (points d'étape / rendus) → **critères** rattachés à des apprentissages critiques (`AC21.01`…).
-  - **Groupes** → membres, espace de travail partagé (éditeur), **URL de dépôt** par jalon.
-  - **Auto-évaluations** : un étudiant par jalon, niveau 1–4 + justification par critère + réflexion globale.
-    Brouillon privé → soumise (visible par le groupe et l'équipe) → **commentaires**. L'enseignant peut rouvrir.
-- Règles d'accès : `src/lib/permissions.ts` (testées dans `permissions.test.ts`), appliquées côté serveur
-  sur chaque page et chaque Server Action.
+## Documentation
 
-Détails et conventions : [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+| Fichier | Contenu |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules partagés, conventions, règles de sécurité, routes |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Direction visuelle, tokens, composants (`src/components/ui`) |
+| [`docs/research/SYNTHESE.md`](docs/research/SYNTHESE.md) | Recherche utilisateurs et benchmark |
+| [`docs/AUTH-EXTERNE.md`](docs/AUTH-EXTERNE.md) | Brancher le CAS de l'université (plus tard) |
+
+Tout le thème est dans `src/app/globals.css` (tokens) ; les règles d'accès dans `src/lib/permissions.ts` (testées).
 
 ## Scripts
 
 | | |
 |---|---|
 | `npm run dev` / `build` / `start` | Next.js |
-| `npm run typecheck` / `lint` / `test` | Qualité |
-| `npm run db:migrate` | Nouvelle migration (dev) |
-| `npm run db:deploy` | Appliquer les migrations (prod) |
-| `npm run db:seed` | Données de démo (refusé en production) |
+| `npm run typecheck` / `lint` / `test` | Qualité (Vitest) |
+| `npm run db:deploy` / `db:migrate` / `db:seed` | Base de données |
+
+## Variables d'environnement
+
+Voir [`.env.example`](.env.example) : `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (**URL publique** :
+elle sert aussi aux liens ICS et de partage), `SIGNUP_ALLOWED_DOMAINS`, `LINK_CHECK_ALLOW_HOSTS`,
+`PEERTUBE_HOSTS` (instances Esup-Pod), et les variables CAS/OIDC commentées.
 
 ## Déploiement (Dokploy)
 
-1. Créer une application **Docker Compose** pointant sur ce dépôt (`docker-compose.yml`).
-2. Renseigner les variables : `MARIADB_ROOT_PASSWORD`, `MARIADB_PASSWORD`, `BETTER_AUTH_SECRET`,
-   `BETTER_AUTH_URL` (URL publique), éventuellement `SIGNUP_ALLOWED_DOMAINS`.
-3. Déployer : `db` démarre, `migrate` applique les migrations puis s'arrête, `app` démarre
-   (healthcheck sur `/api/health`).
-4. Créer le premier admin : s'inscrire, puis
+1. Application **Docker Compose** pointant sur ce dépôt (`docker-compose.yml`).
+2. Variables : `MARIADB_ROOT_PASSWORD`, `MARIADB_PASSWORD`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, et les optionnelles.
+3. Déployer : `db` → `migrate` (migrations **et référentiel MMI officiel**, puis arrêt) → `app` (healthcheck `/api/health`).
+   Le référentiel est une migration de données (`prisma/migrations/*_referentiel_mmi`, générée par
+   `scripts/build-referentiel-migration.ts`) : aucune donnée de démo n'est chargée en production.
+4. Premier admin : s'inscrire, puis
    `docker compose exec db mariadb -u cours -p cours -e "UPDATE user SET role='ADMIN' WHERE email='…'"`.
 
-## Pistes pour la suite
+## Sécurité
 
-- Édition **temps réel** à plusieurs (BlockNote + Yjs + serveur Hocuspocus) pour l'espace de groupe.
-- SSO de l'établissement (CAS / OIDC) via un plugin Better Auth.
-- Import des pages BookStack (export Markdown → champ `markdown`, converti à la première ouverture).
-- Notifications (nouveau commentaire, jalon proche), export CSV du suivi des auto-évaluations.
-- Référentiel de compétences / AC réutilisable entre SAÉ, portfolio étudiant.
+- Règles d'accès centralisées et testées (`src/lib/permissions.ts`), vérifiées côté serveur dans chaque page et
+  chaque Server Action ; validation zod de toutes les entrées ; requêtes SQL paramétrées uniquement.
+- Vérificateur de liens anti-SSRF (IP privées/IPv6/NAT64 bloquées au moment de la connexion, ports limités,
+  redirections revalidées) ; 50 liens max par groupe, 10 ajouts/min par personne.
+- En-têtes : CSP (iframes limitées aux intégrations autorisées), `X-Frame-Options`, `nosniff`, `Referrer-Policy`.
+  Rate-limit sur la connexion et l'inscription. Export CSV protégé contre l'injection de formules.
+- Contraintes en base : un étudiant = un groupe par SAÉ ; un créneau de soutenance par groupe.
+- **Limite connue — adresses e-mail non vérifiées** : sans serveur d'e-mail, Better Auth ne peut pas vérifier les
+  adresses. Quelqu'un pourrait s'inscrire avec l'adresse d'un autre étudiant avant lui et être ajouté à sa place
+  dans une promo ou un groupe (ajout par e-mail). En attendant le CAS (qui règle le problème : l'identité vient de
+  l'université) : restreindre `SIGNUP_ALLOWED_DOMAINS`, ou configurer un SMTP et activer
+  `emailAndPassword.requireEmailVerification` dans `src/lib/auth.ts`.
+- Les pages refusées affichent « Accès refusé » mais répondent en HTTP 200 (rendu en streaming à cause de
+  `src/app/loading.tsx`) ; le contenu protégé n'est jamais envoyé.
+
+## Pistes suivantes
+
+Brancher le CAS (voir doc) · import BookStack via son API · import ICS des emplois du temps · résumé par e-mail
+(SMTP) · édition temps réel (Yjs + Hocuspocus) · export vers ScoDoc · contrôles automatiques des livrables web.

@@ -4,6 +4,7 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import { nextCookies } from "better-auth/next-js";
 import { APIError } from "better-auth/api";
 import { db } from "@/lib/db";
+import { externalAuthPlugins, trustedProviders } from "@/lib/auth-providers";
 
 const allowedDomains = (process.env.SIGNUP_ALLOWED_DOMAINS ?? "")
   .split(",")
@@ -15,6 +16,10 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 10,
+  },
+  account: {
+    // Prêt pour l'authentification externe (CAS/OIDC) : lie le compte IdP au compte local de même e-mail
+    accountLinking: { enabled: true, trustedProviders },
   },
   user: {
     additionalFields: {
@@ -46,5 +51,6 @@ export const auth = betterAuth({
       },
     },
   },
-  plugins: [nextCookies()],
+  // nextCookies() doit rester en dernier
+  plugins: [...externalAuthPlugins(), nextCookies()],
 });
