@@ -1,0 +1,7 @@
+# Stack complète en local uniquement : publie l'app sur http://localhost:3000.
+# `docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build`
+# Ne pas utiliser sur Dokploy (le port 3000 de l'hôte y est pris par Dokploy).
+services:
+  app:
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
