@@ -38,6 +38,8 @@ const nextConfig: NextConfig = {
     // Active forbidden() / unauthorized() pour les 403
     authInterrupts: true,
     serverActions: { bodySizeLimit: "2mb" },
+    // Le build Docker repart d'une couche vide : le cache Turbopack (~2 min d'écriture) ne serait jamais relu
+    turbopackFileSystemCacheForBuild: false,
   },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
