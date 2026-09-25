@@ -89,10 +89,12 @@ elle sert aussi aux liens ICS et de partage), `SIGNUP_ALLOWED_DOMAINS`, `LINK_CH
 
 1. Application **Docker Compose** pointant sur ce dépôt (`docker-compose.yml`).
 2. Variables : `MARIADB_ROOT_PASSWORD`, `MARIADB_PASSWORD`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, et les optionnelles.
-3. Déployer : `db` → `migrate` (migrations **et référentiel MMI officiel**, puis arrêt) → `app` (healthcheck `/api/health`).
+3. Domaine (onglet *Domains*) : service **`app`**, port **3000**. L'app ne publie aucun port sur l'hôte (le 3000
+   y est pris par Dokploy) : c'est Traefik qui route le domaine vers le conteneur.
+4. Déployer : `db` → `migrate` (migrations **et référentiel MMI officiel**, puis arrêt) → `app` (healthcheck `/api/health`).
    Le référentiel est une migration de données (`prisma/migrations/*_referentiel_mmi`, générée par
    `scripts/build-referentiel-migration.ts`) : aucune donnée de démo n'est chargée en production.
-4. Premier admin : s'inscrire, puis
+5. Premier admin : s'inscrire, puis
    `docker compose exec db mariadb -u cours -p cours -e "UPDATE user SET role='ADMIN' WHERE email='…'"`.
 
 ## Sécurité

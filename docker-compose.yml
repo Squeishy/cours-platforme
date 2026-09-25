@@ -1,5 +1,6 @@
 # Local : `docker compose up -d db` puis `npm run dev`
-# Complet / Dokploy : `docker compose up -d --build`
+# Complet en local : `docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build`
+# Dokploy : ce fichier seul ; domaine rattaché au service `app`, port 3000 (routé par Traefik)
 services:
   db:
     image: mariadb:11.8
@@ -47,8 +48,9 @@ services:
       PEERTUBE_HOSTS: ${PEERTUBE_HOSTS:-}
       LINK_CHECK_ALLOW_HOSTS: ${LINK_CHECK_ALLOW_HOSTS:-}
       PORT: 3000
-    ports:
-      - "3000:3000"
+    # Pas de port publié sur l'hôte : 3000 y est déjà pris par Dokploy (voir docker-compose.local.yml)
+    expose:
+      - "3000"
     depends_on:
       migrate:
         condition: service_completed_successfully
