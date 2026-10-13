@@ -1,22 +1,7 @@
 // Petits composants d'affichage sans état, partagés par le périmètre portfolio / vitrine / groupes.
-import Link from "next/link";
 import { LEVELS, levelLabel } from "@/lib/assessment";
 import { LINK_STATUS_LABELS, type LinkCheckStatus } from "@/lib/link-check-core";
 import { timeAgo } from "@/lib/format";
-import { AssessmentStatusBadge as SharedAssessmentStatusBadge } from "@/components/ui";
-
-/** @deprecated Remplacé par le fil d'Ariane (`PageHeader breadcrumbs`). */
-export function BackLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex min-h-11 items-center gap-1 self-start text-sm text-muted hover:text-ink hover:underline print:hidden"
-    >
-      <span aria-hidden="true">←</span>
-      {children}
-    </Link>
-  );
-}
 
 /** Lien externe (dépôt, trace, projet) : nouvel onglet, sans référent ni transmission de réputation */
 export function ExternalLink({
@@ -114,14 +99,6 @@ export function LinkCheckStatusView({
       {note && status !== "OK" && <span className="text-sm text-muted">{note}</span>}
     </span>
   );
-}
-
-/**
- * @deprecated Utiliser `AssessmentStatusBadge` de `@/components/ui` (statut « NONE » au lieu de null).
- * Conservé comme simple adaptateur pour les pages qui l'importent encore d'ici.
- */
-export function AssessmentStatusBadge({ status }: { status: "DRAFT" | "SUBMITTED" | null }) {
-  return <SharedAssessmentStatusBadge status={status ?? "NONE"} />;
 }
 
 /** Carré de couleur d'une compétence (décoratif) */
