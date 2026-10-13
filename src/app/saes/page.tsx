@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
-import { canCreateSae, canManageSae, isAdmin } from "@/lib/permissions";
-import { formatDateRange } from "./_lib/dates";
+import { canCreateSae, isAdmin } from "@/lib/permissions";
+import { EmptyState, PageHeader, StatusBadge, Swatch } from "@/components/ui";
 
 export const metadata: Metadata = { title: "SAÉ" };
 
@@ -20,74 +20,46 @@ export default async function SaesPage() {
         },
     orderBy: [{ semester: "asc" }, { code: "asc" }, { title: "asc" }],
     take: 300,
-    select: {
-      id: true,
-      code: true,
-      title: true,
-      semester: true,
-      startsAt: true,
-      endsAt: true,
-      published: true,
-      ownerId: true,
-      teachers: { select: { id: true } },
-      cohort: { select: { name: true } },
-      groups: {
-        where: { members: { some: { userId: user.id } } },
-        select: { name: true },
-      },
-    },
+    select: { id: true, code: true, title: true, semester: true, published: true },
   });
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="eyebrow">Situations d&apos;apprentissage et d&apos;évaluation</p>
-          <h1 className="text-2xl font-semibold">SAÉ</h1>
-        </div>
-        {canCreateSae(user) && (
-          <Link href="/saes/new" className="btn btn-primary">
-            Nouvelle SAÉ
-          </Link>
-        )}
-      </div>
+    <div className="flex flex-col gap-10">
+      <PageHeader
+        title="SAÉ"
+        actions={
+          canCreateSae(user) && (
+            <Link href="/saes/new" className="btn btn-primary">
+              Nouvelle SAÉ
+            </Link>
+          )
+        }
+      />
 
       {saes.length === 0 ? (
-        <div className="card text-muted">
-          <p>Aucune SAÉ pour l&apos;instant. Elles apparaissent ici dès que l&apos;équipe pédagogique les publie.</p>
-          {canCreateSae(user) && (
-            <p className="mt-1">
-              <Link href="/saes/new" className="underline">
-                Créer la première SAÉ
-              </Link>
-            </p>
-          )}
-        </div>
+        <EmptyState>Aucune SAÉ.</EmptyState>
       ) : (
-        <ul className="grid gap-3 md:grid-cols-2">
-          {saes.map((sae) => {
-            const range = formatDateRange(sae.startsAt, sae.endsAt);
-            const myGroup = sae.groups[0];
-            return (
-              <li key={sae.id}>
-                <Link
-                  href={`/saes/${sae.id}`}
-                  className="card block h-full min-h-11 transition-colors hover:border-accent"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    {sae.code && <span className="font-mono text-sm font-semibold text-accent">{sae.code}</span>}
-                    {sae.semester && <span className="badge font-mono">S{sae.semester}</span>}
-                    {sae.cohort && <span className="badge">{sae.cohort.name}</span>}
-                    {!sae.published && <span className="badge badge-warn">Brouillon</span>}
-                    {canManageSae(user, sae) && <span className="badge badge-accent">Gérée</span>}
-                  </div>
-                  <h2 className="mt-2 font-semibold break-words">{sae.title}</h2>
-                  {range && <p className="mt-1 text-sm text-muted">{range}</p>}
-                  {myGroup && <p className="mt-1 text-sm">Mon groupe : {myGroup.name}</p>}
-                </Link>
-              </li>
-            );
-          })}
+        <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {saes.map((sae) => (
+            <li key={sae.id}>
+              <Link
+                href={`/saes/${sae.id}`}
+                className="card flex h-full min-h-11 items-start gap-4 transition-colors hover:border-ink"
+              >
+                <Swatch seed={sae.id} text={sae.code ?? sae.title} />
+                <div className="flex min-w-0 flex-col gap-1">
+                  {sae.code && <span className="text-sm text-muted">{sae.code}</span>}
+                  <h2 className="text-lg break-words">{sae.title}</h2>
+                  {(sae.semester || !sae.published) && (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
+                      {sae.semester && <span>Semestre {sae.semester}</span>}
+                      {!sae.published && <StatusBadge tone="warn">Brouillon</StatusBadge>}
+                    </div>
+                  )}
+                </div>
+              </Link>
+            </li>
+          ))}
         </ul>
       )}
     </div>
